@@ -27,6 +27,9 @@
   <h2>Live Market (hottest symbol)</h2>
   <div id="live-market" class="card"></div>
 
+  <h2>Live Signal Feed <span class="note">- every detected movement, including rejected/NO_TRADE</span></h2>
+  <table id="live-signals-table"><thead></thead><tbody></tbody></table>
+
   <h2>Strategy Leaderboard</h2>
   <table id="strategy-table"><thead></thead><tbody></tbody></table>
 
@@ -86,6 +89,25 @@ async function refreshLiveMarket() {
     <span class="stat">velocity_10s <b class="${pnlClass(m.velocity_10s)}">${fmt(m.velocity_10s,3)}%</b></span>
     <span class="stat">price <b>${fmt(m.price,6)}</b></span>
     <span class="stat">regime <b>${m.regime_label || '-'}</b></span>`;
+}
+
+async function refreshLiveSignals() {
+  const d = await j('/api/live_signals?limit=50');
+  const t = document.getElementById('live-signals-table');
+  t.querySelector('thead').innerHTML = `<tr><th>Time</th><th>Strategy</th><th>Symbol</th><th>Dir</th>
+    <th>Velocity 10s</th><th>Accel</th><th>Persistence</th><th>IPR Phase</th><th>Exhaustion</th>
+    <th>Net Edge%</th><th>Trade?</th><th>NO_TRADE Reason</th></tr>`;
+  const rows = d.signals || [];
+  t.querySelector('tbody').innerHTML = rows.length ? rows.map(r => `<tr>
+    <td>${(r.ts||'').slice(11,19)}</td><td>${r.strategy}</td><td>${r.symbol}</td>
+    <td class="${r.direction==='UP'?'pos':'neg'}">${r.direction}</td>
+    <td class="${pnlClass(r.velocity_10s)}">${fmt(r.velocity_10s,3)}%</td>
+    <td class="${pnlClass(r.acceleration_10s)}">${fmt(r.acceleration_10s,4)}</td>
+    <td>${r.persistence_score!=null?fmt(r.persistence_score,0):'-'}</td>
+    <td>${r.phase||'-'}</td><td>${fmt(r.exhaustion_risk,0)}</td>
+    <td class="${pnlClass(r.expected_net_edge_pct)}">${fmt(r.expected_net_edge_pct,3)}</td>
+    <td>${r.accepted?'YES':'no'}</td><td>${r.reject_reason||'-'}</td>
+  </tr>`).join('') : '<tr><td class="empty" colspan="12">no signals yet</td></tr>';
 }
 
 async function refreshStrategyTable() {
@@ -175,8 +197,9 @@ async function refreshFalsePositives() {
 }
 
 async function refreshAll() {
-  await Promise.all([refreshStatus(), refreshLiveMarket(), refreshStrategyTable(), refreshAgreement(),
-    refreshConfirmationLab(), refreshExitPolicyLab(), refreshTrades(), refreshMissed(), refreshFalsePositives()]);
+  await Promise.all([refreshStatus(), refreshLiveMarket(), refreshLiveSignals(), refreshStrategyTable(),
+    refreshAgreement(), refreshConfirmationLab(), refreshExitPolicyLab(), refreshTrades(), refreshMissed(),
+    refreshFalsePositives()]);
 }
 refreshAll();
 setInterval(refreshAll, 3000);

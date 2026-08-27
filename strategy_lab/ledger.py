@@ -80,13 +80,15 @@ class LabLedger:
             self._exec,
             """INSERT INTO strategy_signals
                (ts, market_event_id, strategy, symbol, exchange, direction, price, score, phase,
+                velocity_10s, acceleration_10s, persistence_score,
                 spread_bps, exhaustion_risk, late_entry_risk, regime_label, meta_signal_strength,
                 agreement_count, conflict_count, expected_move_pct, expected_cost_pct,
                 expected_net_edge_pct, accepted, reject_reason, dataset_phase, dataset_version, details)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (_now_iso(), kw["market_event_id"], kw["strategy"], kw["symbol"], kw["exchange"],
-             kw["direction"], kw["price"], kw["score"], kw.get("phase"), kw.get("spread_bps"),
-             kw.get("exhaustion_risk"), kw.get("late_entry_risk"), kw.get("regime_label"),
+             kw["direction"], kw["price"], kw["score"], kw.get("phase"),
+             kw.get("velocity_10s"), kw.get("acceleration_10s"), kw.get("persistence_score"),
+             kw.get("spread_bps"), kw.get("exhaustion_risk"), kw.get("late_entry_risk"), kw.get("regime_label"),
              kw.get("meta_signal_strength"), kw.get("agreement_count"), kw.get("conflict_count"),
              kw.get("expected_move_pct"), kw.get("expected_cost_pct"), kw.get("expected_net_edge_pct"),
              int(kw.get("accepted", False)), kw.get("reject_reason"), kw["dataset_phase"],
@@ -279,6 +281,19 @@ class LabLedger:
             self._query, "SELECT strategy, COUNT(*) AS n FROM strategy_signals GROUP BY strategy"
         )
         return {r["strategy"]: r["n"] for r in rows}
+
+    async def get_recent_signals(self, limit: int = 50) -> list[dict]:
+        """Live signal feed (dashboard section 17): every detected movement,
+        including rejected/NO_TRADE ones, with the raw metrics behind the
+        decision - not just the ones that became trades."""
+        rows = await asyncio.to_thread(
+            self._query,
+            """SELECT ts, strategy, symbol, direction, score, phase, velocity_10s, acceleration_10s,
+                      persistence_score, exhaustion_risk, expected_net_edge_pct, accepted, reject_reason
+               FROM strategy_signals ORDER BY id DESC LIMIT ?""",
+            (limit,),
+        )
+        return [dict(r) for r in rows]
 
     async def get_recent_trades(self, limit: int = 30) -> list[dict]:
         rows = await asyncio.to_thread(

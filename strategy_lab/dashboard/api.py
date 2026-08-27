@@ -41,6 +41,14 @@ def create_app(runtime) -> FastAPI:
     async def exchanges():
         return {"exchanges": [h.to_dict() for h in runtime.health.all().values()]}
 
+    @app.get("/api/live_signals")
+    async def live_signals(limit: int = 50):
+        """Every detected movement, including rejected/NO_TRADE ones (user
+        request during the baseline-alone measurement window) - strategy,
+        symbol, direction, velocity, acceleration, persistence, IPR phase,
+        exhaustion, expected net edge, and the NO_TRADE reason."""
+        return {"signals": await runtime.ledger.get_recent_signals(limit)}
+
     @app.get("/api/live_market")
     async def live_market():
         return runtime.live_market_snapshot

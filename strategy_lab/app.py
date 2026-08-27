@@ -263,6 +263,11 @@ async def stage_loop(cfg: LabConfig, store: StateStore, runtime: LabRuntime, exe
             late = late_entry.compute(primary_state, now)
             exh_tuple = (exh.up_risk, exh.down_risk)
             late_tuple = (late.up_risk, late.down_risk)
+            # market-event-level readings for the live signal feed (dashboard section 17) -
+            # the same for every strategy on this symbol/cycle, reused from engine_scores
+            # already computed above rather than calling the engines again.
+            velocity_10s = primary_state.velocity_pct(now, 10)
+            acceleration_10s = engine_scores["acceleration"].details.get("acceleration")
 
             fee_primary = taker_fee_bps_by_exchange.get(primary_ex, 10.0)
 
@@ -297,7 +302,9 @@ async def stage_loop(cfg: LabConfig, store: StateStore, runtime: LabRuntime, exe
                 signal_id = await runtime.ledger.insert_signal(
                     market_event_id=event.market_event_id, strategy=sig.strategy, symbol=sig.symbol,
                     exchange=sig.exchange, direction=sig.direction, price=sig.price, score=sig.score,
-                    phase=sig.phase, spread_bps=sig_state.spread_bps_now(), exhaustion_risk=sig.exhaustion_risk,
+                    phase=sig.phase, velocity_10s=velocity_10s, acceleration_10s=acceleration_10s,
+                    persistence_score=(sig.score if sig.strategy == "PERSISTENT_MICRO_TREND" else None),
+                    spread_bps=sig_state.spread_bps_now(), exhaustion_risk=sig.exhaustion_risk,
                     late_entry_risk=sig.late_entry_risk, regime_label=regime_label, meta_signal_strength=meta_strength,
                     agreement_count=agreement_count, conflict_count=conflict_count,
                     expected_move_pct=sig.expected_move_pct, expected_cost_pct=sig.expected_cost_pct,

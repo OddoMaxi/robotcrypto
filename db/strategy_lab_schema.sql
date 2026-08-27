@@ -30,6 +30,9 @@ CREATE TABLE IF NOT EXISTS strategy_signals (
     price REAL NOT NULL,
     score REAL NOT NULL,
     phase TEXT,                          -- e.g. IMPULSE/PULLBACK/REACCELERATION, NULL for strategies without phases
+    velocity_10s REAL,                   -- market-event-level reading (same for every strategy on this symbol/cycle)
+    acceleration_10s REAL,               -- market-event-level reading (same for every strategy on this symbol/cycle)
+    persistence_score REAL,              -- PERSISTENT_MICRO_TREND's own score; NULL for every other strategy
     spread_bps REAL,
     exhaustion_risk REAL,
     late_entry_risk REAL,
