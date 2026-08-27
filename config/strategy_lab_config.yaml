@@ -22,18 +22,21 @@ universe:
     okx: 40
 
 stage:
-  cycle_interval_s: 2
+  cycle_interval_s: 3
   # NOTE: this is a raw |velocity_pct(now, 10s)| reading (see strategy_lab/app.py
   # _fast_score), not the baseline bot's weighted/volume-amplified multi-horizon
   # score - the two are on different scales and must not share a threshold value.
   min_abs_fast_score: 0.03   # below this a symbol isn't worth a full strategy pass this cycle
 
 # 2-core VPS shared with the arbitrage bot AND the existing Momentum Bot - the
-# Lab must never be the reason either of those degrades. See section 18.
+# Lab must never be the reason either of those degrades (see section 18). The
+# baseline + arbitrage engine alone already run close to saturating both cores
+# most of the time, leaving well under one full core of real spare headroom -
+# these limits are sized for that measured reality, not for an idle machine.
 compute_budget:
   degrade_threshold_ratio: 0.8
   degraded_promote_fraction: 0.5
-  max_symbols_full_pass: 60   # hard cap on symbols evaluated by the full strategy suite per cycle
+  max_symbols_full_pass: 20   # hard cap on symbols evaluated by the full strategy suite per cycle
 
 strategies:
   baseline_momentum_starting:
@@ -84,8 +87,8 @@ exit_lab:
   # baseline's own cycle time). Once at capacity, new entries are rejected
   # (0 TRADE > BAD TRADE) rather than letting tracked-trade count grow
   # unbounded - this is a resource gate, not a strategy judgment.
-  max_open_trades: 40
-  fixed_horizons_s: [5, 10, 15, 20, 30, 45, 60]
+  max_open_trades: 12
+  fixed_horizons_s: [5, 15, 30, 60]
   trailing_activation_r: 1.0
   breakeven_trigger_r: 0.5
   partial_tp_r: 1.5

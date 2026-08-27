@@ -16,6 +16,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from momentum.data.state import SymbolState
+from momentum.engines import exhaustion, late_entry
 from momentum.engines.cross_exchange import LeadLagTracker
 from strategy_lab.ledger import LabLedger
 from strategy_lab.market_bus import MarketEvent
@@ -45,9 +46,8 @@ class CrossExchangeLeadLagTracker:
         self.stats_cache: dict[tuple[str, str], dict] = {}
         self._pending: list[_PendingObservation] = []
 
-    def compute(self, event: MarketEvent, exhaustion_risk_by_exchange: dict[str, tuple[float, float]],
-                late_entry_risk_by_exchange: dict[str, tuple[float, float]], common_cfg: dict,
-                taker_fee_bps_by_exchange: dict[str, float], now: float) -> StrategySignal | None:
+    def compute(self, event: MarketEvent, common_cfg: dict, taker_fee_bps_by_exchange: dict[str, float],
+                now: float) -> StrategySignal | None:
         velocities_10s = {}
         for ex, state in event.states_by_exchange.items():
             v10 = state.velocity_pct(now, 10)
@@ -78,10 +78,15 @@ class CrossExchangeLeadLagTracker:
             ))
 
             stats = self.stats_cache.get((leader, follower), {"sample_size": 0})
-            exh_up, exh_down = exhaustion_risk_by_exchange.get(follower, (0.0, 0.0))
-            late_up, late_down = late_entry_risk_by_exchange.get(follower, (0.0, 0.0))
-            exh = exh_up if direction == "UP" else exh_down
-            late = late_up if direction == "UP" else late_down
+            # only computed for an actual follower candidate at an actual leader
+            # onset (rare) - not precomputed for every symbol/exchange every
+            # cycle, which was pure waste for the vast majority of cycles where
+            # no lead/lag episode is starting (a real compute-budget fix, see
+            # git history for the incident this replaced)
+            ex = exhaustion.compute(follower_state, now)
+            le = late_entry.compute(follower_state, now)
+            exh = ex.up_risk if direction == "UP" else ex.down_risk
+            late = le.up_risk if direction == "UP" else le.down_risk
 
             signal = StrategySignal(
                 strategy=NAME, symbol=event.symbol, exchange=follower, direction=direction, price=follower_price,

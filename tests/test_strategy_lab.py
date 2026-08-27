@@ -207,8 +207,7 @@ def test_lead_lag_observation_only_resolves_after_the_eval_window_elapses():
 
         event = _FakeEvent("FFFUSDT")
         event.states_by_exchange = {"binance": binance, "bybit": bybit}
-        sig = tracker.compute(event, {"binance": (0, 0), "bybit": (0, 0)}, {"binance": (0, 0), "bybit": (0, 0)},
-                               COMMON_CFG, {"binance": 10.0, "bybit": 10.0}, ts2)
+        sig = tracker.compute(event, COMMON_CFG, {"binance": 10.0, "bybit": 10.0}, ts2)
         assert sig is not None
         assert sig.reject_reason == "insufficient_sample"   # honest: no empirical edge measured yet
         assert len(tracker._pending) == 1

@@ -264,13 +264,6 @@ async def stage_loop(cfg: LabConfig, store: StateStore, runtime: LabRuntime, exe
             exh_tuple = (exh.up_risk, exh.down_risk)
             late_tuple = (late.up_risk, late.down_risk)
 
-            exh_by_ex, late_by_ex = {}, {}
-            for ex, st in states_by_exchange.items():
-                e = exhaustion.compute(st, now)
-                l = late_entry.compute(st, now)
-                exh_by_ex[ex] = (e.up_risk, e.down_risk)
-                late_by_ex[ex] = (l.up_risk, l.down_risk)
-
             fee_primary = taker_fee_bps_by_exchange.get(primary_ex, 10.0)
 
             candidates: list[StrategySignal] = []
@@ -286,7 +279,7 @@ async def stage_loop(cfg: LabConfig, store: StateStore, runtime: LabRuntime, exe
                 breakout_retest_continuation.compute(event, primary_ex, primary_state, engine_scores, cross_result,
                                                        exh_tuple, late_tuple, strategies_cfg["breakout_retest_continuation"],
                                                        common_cfg, fee_primary, now),
-                lead_lag_strategy.compute(event, exh_by_ex, late_by_ex, common_cfg, taker_fee_bps_by_exchange, now),
+                lead_lag_strategy.compute(event, common_cfg, taker_fee_bps_by_exchange, now),
             ):
                 if sig is not None:
                     candidates.append(sig)
