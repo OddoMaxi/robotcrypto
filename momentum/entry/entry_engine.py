@@ -10,7 +10,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 from momentum.data.state import SymbolState
-from momentum.engines import late_entry
+from momentum.engines.late_entry import LateEntryScore
 from momentum.engines.types import EngineScore
 from momentum.ranker.master_ranker import RankResult
 
@@ -67,6 +67,7 @@ def compute(
     entry_cfg: dict,
     taker_fee_bps: float,
     reward_risk_target_multiple: float,
+    late: LateEntryScore,
 ) -> EntryQuality:
     price = state.price_now()
     spread_bps = state.spread_bps_now()
@@ -102,7 +103,6 @@ def compute(
     depth_notional = (depth_side or 0.0) * price
     depth_score = 100.0 if depth_notional >= MIN_DEPTH_NOTIONAL_USD else (depth_notional / MIN_DEPTH_NOTIONAL_USD) * 100.0
 
-    late = late_entry.compute(state, now)
     late_entry_risk = late.up_risk if direction == "UP" else late.down_risk
 
     entry_quality = (spread_score + distance_score + rr_score + depth_score) / 4.0

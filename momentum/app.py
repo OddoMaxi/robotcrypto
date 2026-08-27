@@ -330,9 +330,9 @@ async def stage_ab_loop(cfg: Config, store: StateStore, runtime: AppRuntime,
             fee_bps = broker.taker_fee_bps(primary_ex)
             reward_risk_mult = cfg.risk_cfg["reward_risk_target_multiple"]
             entry_up = entry_engine.compute("UP", primary_state, now, rank["UP"], engine_scores, cfg.entry_cfg,
-                                             fee_bps, reward_risk_mult)
+                                             fee_bps, reward_risk_mult, late)
             entry_down = entry_engine.compute("DOWN", primary_state, now, rank["DOWN"], engine_scores, cfg.entry_cfg,
-                                               fee_bps, reward_risk_mult)
+                                               fee_bps, reward_risk_mult, late)
 
             quality_up = exchange_quality.compute("UP", states_by_exchange, now, cfg.shadow_cfg["taker_fee_bps_by_exchange"])
             quality_down = exchange_quality.compute("DOWN", states_by_exchange, now, cfg.shadow_cfg["taker_fee_bps_by_exchange"])
