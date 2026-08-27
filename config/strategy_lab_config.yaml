@@ -78,6 +78,13 @@ execution:
     reward_risk_target_multiple: 2.0
 
 exit_lab:
+  # section 18 compute-budget discipline: ExitLab.tick() re-evaluates every
+  # open trade against every policy every cycle - this is the single biggest
+  # cost in the whole Lab (confirmed live: uncapped, it degraded the
+  # baseline's own cycle time). Once at capacity, new entries are rejected
+  # (0 TRADE > BAD TRADE) rather than letting tracked-trade count grow
+  # unbounded - this is a resource gate, not a strategy judgment.
+  max_open_trades: 40
   fixed_horizons_s: [5, 10, 15, 20, 30, 45, 60]
   trailing_activation_r: 1.0
   breakeven_trigger_r: 0.5
@@ -85,7 +92,7 @@ exit_lab:
   momentum_decay_fraction: 0.4     # velocity must hold at least this fraction of its entry-time value
   orderflow_reversal_threshold: 0.5
   exhaustion_exit_threshold: 75
-  max_tracking_s: 300              # give up tracking counterfactual exits after this long
+  max_tracking_s: 120              # give up tracking counterfactual exits after this long - also bounds steady-state open_count
   production_exit_policy: THESIS_INVALIDATION_EXIT   # which policy closes the one REAL ledger trade
 
 fast_entry_lab:

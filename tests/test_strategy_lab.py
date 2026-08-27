@@ -301,6 +301,7 @@ def test_exit_lab_tracks_mfe_and_mae():
             "fixed_horizons_s": [5], "trailing_activation_r": 1.0, "breakeven_trigger_r": 0.5,
             "partial_tp_r": 1.5, "momentum_decay_fraction": 0.4, "orderflow_reversal_threshold": 0.5,
             "exhaustion_exit_threshold": 75, "max_tracking_s": 30, "production_exit_policy": "EXIT_FIXED_5S",
+            "max_open_trades": 40,
         }
         lab = ExitLab(exit_lab_cfg, COMMON_CFG, execution, ledger)
 

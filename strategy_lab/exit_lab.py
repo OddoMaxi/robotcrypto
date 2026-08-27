@@ -83,6 +83,10 @@ class ExitLab:
     def open_count(self) -> int:
         return len(self._trades)
 
+    @property
+    def is_at_capacity(self) -> bool:
+        return len(self._trades) >= self.cfg["max_open_trades"]
+
     def has_open_trade(self, strategy: str, symbol: str, direction: str) -> bool:
         """A strategy still tracking an open (strategy, symbol, direction)
         position must not open a second one on the same thesis every cycle
@@ -95,6 +99,13 @@ class ExitLab:
         )
 
     async def tick(self, store: StateStore, now: float) -> None:
+        # exhaustion/late_entry/orderflow are each O(window) - many open trades
+        # (across strategies) commonly share the same (exchange, symbol), and
+        # THESIS_INVALIDATION_EXIT/EXHAUSTION_EXIT both need exhaustion.compute()
+        # independently. Memoized once per (exchange, symbol) per tick instead of
+        # once per trade per policy - this was the actual cost behind the
+        # compute-budget incident this comment documents (see git history).
+        engine_cache: dict[tuple[str, str], dict] = {}
         done_ids = []
         for trade_id, trade in list(self._trades.items()):
             state = store.get(trade.exchange, trade.symbol)
@@ -104,12 +115,14 @@ class ExitLab:
             fav = _favorable_pct(trade.direction, trade.entry_price, price)
             trade.mfe_pct = max(trade.mfe_pct, fav)
             trade.mae_pct = min(trade.mae_pct, fav)
+            cache_key = (trade.exchange, trade.symbol)
+            cached = engine_cache.setdefault(cache_key, {})
 
             for name in self._policy_names():
                 ps = trade.policies[name]
                 if ps.triggered:
                     continue
-                if self._check(name, trade, ps, state, now, fav):
+                if self._check(name, trade, ps, state, now, fav, cached):
                     await self._resolve_policy(trade, name, state, now)
                     ps.triggered = True
 
@@ -125,8 +138,26 @@ class ExitLab:
         for tid in done_ids:
             self._trades.pop(tid, None)
 
+    @staticmethod
+    def _cached_exhaustion(cached: dict, state: SymbolState, now: float):
+        if "exhaustion" not in cached:
+            cached["exhaustion"] = exhaustion.compute(state, now)
+        return cached["exhaustion"]
+
+    @staticmethod
+    def _cached_late_entry(cached: dict, state: SymbolState, now: float):
+        if "late_entry" not in cached:
+            cached["late_entry"] = late_entry.compute(state, now)
+        return cached["late_entry"]
+
+    @staticmethod
+    def _cached_orderflow(cached: dict, state: SymbolState, now: float):
+        if "orderflow" not in cached:
+            cached["orderflow"] = orderflow.compute(state, now)
+        return cached["orderflow"]
+
     def _check(self, name: str, trade: TrackedTrade, ps: _PolicyState, state: SymbolState, now: float,
-               fav: float) -> bool:
+               fav: float, cached: dict) -> bool:
         elapsed = now - trade.entry_ts
         r = fav / trade.stop_distance_pct if trade.stop_distance_pct > 0 else 0.0
 
@@ -154,7 +185,7 @@ class ExitLab:
             return directional_v < directional_entry_v * self.cfg["momentum_decay_fraction"]
 
         if name == "ORDER_FLOW_REVERSAL_EXIT":
-            of = orderflow.compute(state, now)
+            of = self._cached_orderflow(cached, state, now)
             buy_ratio = of.details.get("ratios", {}).get(5)
             if buy_ratio is None:
                 return False
@@ -162,13 +193,13 @@ class ExitLab:
             return buy_ratio <= (1.0 - threshold) if trade.direction == "UP" else buy_ratio >= threshold
 
         if name == "EXHAUSTION_EXIT":
-            ex = exhaustion.compute(state, now)
+            ex = self._cached_exhaustion(cached, state, now)
             risk = ex.up_risk if trade.direction == "UP" else ex.down_risk
             return risk >= self.cfg["exhaustion_exit_threshold"]
 
         if name == "THESIS_INVALIDATION_EXIT":
-            ex = exhaustion.compute(state, now)
-            le = late_entry.compute(state, now)
+            ex = self._cached_exhaustion(cached, state, now)
+            le = self._cached_late_entry(cached, state, now)
             exh_risk = ex.up_risk if trade.direction == "UP" else ex.down_risk
             late_risk = le.up_risk if trade.direction == "UP" else le.down_risk
             v10 = state.velocity_pct(now, 10) or 0.0

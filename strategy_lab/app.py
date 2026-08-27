@@ -218,6 +218,7 @@ async def stage_loop(cfg: LabConfig, store: StateStore, runtime: LabRuntime, exe
     baseline_cross_tracker = LeadLagTracker()   # feeds the 4 direction-scoring strategies' cross_result only
 
     cycle_count = 0
+    degraded_mode = False   # set from the *previous* cycle's duration - see bottom of loop
 
     while True:
         t0 = time.time()
@@ -233,7 +234,11 @@ async def stage_loop(cfg: LabConfig, store: StateStore, runtime: LabRuntime, exe
 
         above_floor = [(s, sc) for s, sc in ranked if abs(sc) >= stage_cfg["min_abs_fast_score"]]
         max_full_pass = cb_cfg["max_symbols_full_pass"]
-        active_ipr = ipr_tracker.active_symbols()
+        if degraded_mode:
+            # section 18: shed load on the weakest candidates first, same
+            # pattern as the baseline bot - never on the strongest movers
+            max_full_pass = max(1, int(max_full_pass * cb_cfg["degraded_promote_fraction"]))
+        active_ipr = ipr_tracker.active_symbols()   # never shed - an orphaned episode is worse than a slow cycle
         full_pass_set = list(dict.fromkeys([s for s, _ in above_floor[:max_full_pass]] + active_ipr))
 
         for symbol in full_pass_set:
@@ -312,7 +317,8 @@ async def stage_loop(cfg: LabConfig, store: StateStore, runtime: LabRuntime, exe
                     fast_entry_lab.register(signal_id, sig.strategy, sig.symbol, sig.exchange, sig.direction,
                                              now, sig.price)
 
-                if sig.accepted and not exit_lab.has_open_trade(sig.strategy, sig.symbol, sig.direction):
+                if (sig.accepted and not exit_lab.is_at_capacity
+                        and not exit_lab.has_open_trade(sig.strategy, sig.symbol, sig.direction)):
                     await _open_shadow_trade(cfg, runtime, execution, exit_lab, signal_id, sig, states_by_exchange,
                                               agreement_count, regime_label, wf_tag, risk_cfg, now)
 
