@@ -10,6 +10,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 from momentum.data.state import SymbolState
+from momentum.engines import late_entry
 from momentum.engines.types import EngineScore
 from momentum.ranker.master_ranker import RankResult
 
@@ -26,6 +27,10 @@ _ENGINE_TO_ENTRY_TYPE = {
 
 MIN_STOP_DISTANCE_PCT = 0.15
 MIN_DEPTH_NOTIONAL_USD = 2000.0
+# V1.1 mission 5: a new, additive gate - not a retuning of any existing threshold
+# above. A fast mover that has already traveled too far from where its impulse
+# started gets rejected as TOO_LATE, independent of its entry_quality score.
+LATE_ENTRY_RISK_REJECT_THRESHOLD = 70.0
 
 
 @dataclass(slots=True)
@@ -97,11 +102,19 @@ def compute(
     depth_notional = (depth_side or 0.0) * price
     depth_score = 100.0 if depth_notional >= MIN_DEPTH_NOTIONAL_USD else (depth_notional / MIN_DEPTH_NOTIONAL_USD) * 100.0
 
+    late = late_entry.compute(state, now)
+    late_entry_risk = late.up_risk if direction == "UP" else late.down_risk
+
     entry_quality = (spread_score + distance_score + rr_score + depth_score) / 4.0
+    # dampen (never boost) entry quality for late-entry risk - same pattern as
+    # exhaustion dampening ranker confidence, kept independent of it
+    entry_quality *= max(0.3, 1.0 - late_entry_risk / 150.0)
 
     reject_reason = None
     if distance_from_trigger_pct > max_distance:
         reject_reason = "too_far_past_trigger"
+    elif late_entry_risk >= LATE_ENTRY_RISK_REJECT_THRESHOLD:
+        reject_reason = "too_late"
     elif entry_quality < entry_cfg["min_entry_quality"]:
         reject_reason = "entry_quality_below_threshold"
 
@@ -117,6 +130,6 @@ def compute(
         details={
             "spread_score": spread_score, "distance_score": distance_score,
             "rr_score": rr_score, "depth_score": depth_score, "depth_notional": depth_notional,
-            "trigger": trigger,
+            "trigger": trigger, "late_entry_risk": late_entry_risk,
         },
     )

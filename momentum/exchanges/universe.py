@@ -11,6 +11,12 @@ from momentum.exchanges.base import ExchangeAdapter, SymbolFilter
 
 logger = logging.getLogger(__name__)
 
+# Defense-in-depth: each adapter already excludes non-trading symbols from its
+# own REST response, but Universe re-checks status itself rather than trusting
+# every adapter to always get this right (a delisted/suspended symbol must
+# never reach Stage A/B just because one adapter's filtering changed).
+TRADABLE_STATUSES = {"TRADING", "Trading", "live"}  # Binance, Bybit, OKX respectively
+
 
 class Universe:
     def __init__(self, adapter: ExchangeAdapter, min_quote_volume_24h: float):
@@ -20,7 +26,10 @@ class Universe:
 
     async def refresh(self) -> list[str]:
         all_symbols = await self.adapter.fetch_symbol_universe()
-        liquid = [s for s in all_symbols if s.quote_volume_24h >= self.min_quote_volume_24h]
+        liquid = [
+            s for s in all_symbols
+            if s.quote_volume_24h >= self.min_quote_volume_24h and s.status in TRADABLE_STATUSES
+        ]
         liquid.sort(key=lambda s: s.quote_volume_24h, reverse=True)
 
         self.filters_by_symbol = {s.symbol: s for s in liquid}

@@ -17,6 +17,32 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+# V1.1: additive migrations for columns added to tables that already existed (and
+# already held real data) in earlier deployments. schema.sql's CREATE TABLE IF NOT
+# EXISTS is a no-op against an existing table, so new columns on old tables need
+# this separate idempotent path - never destructive, never drops/recreates a table.
+_MIGRATIONS = [
+    "ALTER TABLE early_mover_events ADD COLUMN starting_score REAL",
+    "ALTER TABLE early_mover_events ADD COLUMN fast_score REAL",
+    "ALTER TABLE early_mover_events ADD COLUMN regime TEXT",
+    "ALTER TABLE early_mover_events ADD COLUMN second_exchange TEXT",
+    "ALTER TABLE early_mover_events ADD COLUMN third_exchange TEXT",
+    "ALTER TABLE early_mover_events ADD COLUMN lead_time_ms REAL",
+    "ALTER TABLE early_mover_events ADD COLUMN confirmation_delay_ms REAL",
+    "ALTER TABLE early_mover_events ADD COLUMN price_move_before_confirmation REAL",
+    "ALTER TABLE early_mover_events ADD COLUMN price_move_after_confirmation REAL",
+    "ALTER TABLE early_mover_events ADD COLUMN time_to_mfe_s REAL",
+    "ALTER TABLE early_mover_events ADD COLUMN time_to_mae_s REAL",
+    "ALTER TABLE early_mover_events ADD COLUMN time_to_025_s REAL",
+    "ALTER TABLE early_mover_events ADD COLUMN time_to_050_s REAL",
+    "ALTER TABLE early_mover_events ADD COLUMN time_to_100_s REAL",
+    "ALTER TABLE engine_runs ADD COLUMN cpu_percent REAL",
+    "ALTER TABLE engine_runs ADD COLUMN rss_mb REAL",
+    "ALTER TABLE engine_runs ADD COLUMN event_loop_lag_ms REAL",
+    "ALTER TABLE engine_runs ADD COLUMN degraded_mode INTEGER NOT NULL DEFAULT 0",
+]
+
+
 class Ledger:
     def __init__(self, db_path: pathlib.Path, schema_path: pathlib.Path):
         self.db_path = db_path
@@ -34,6 +60,13 @@ class Ledger:
         conn.execute("PRAGMA journal_mode=WAL")
         with open(self.schema_path) as f:
             conn.executescript(f.read())
+        conn.commit()
+        for stmt in _MIGRATIONS:
+            try:
+                conn.execute(stmt)
+            except sqlite3.OperationalError as e:
+                if "duplicate column" not in str(e).lower():
+                    raise
         conn.commit()
         self._conn = conn
 
@@ -153,13 +186,40 @@ class Ledger:
             (signal_id, horizon_s, price, pct_change, mfe_pct, mae_pct, ts),
         )
 
-    # -- engine run audit -----------------------------------------------------
-    async def record_engine_run(self, symbols_scanned: int, symbols_promoted: int, duration_ms: float) -> None:
+    # -- engine run audit / compute budget (mission 13) -----------------------
+    async def record_engine_run(self, symbols_scanned: int, symbols_promoted: int, duration_ms: float,
+                                 cpu_percent: float | None = None, rss_mb: float | None = None,
+                                 event_loop_lag_ms: float | None = None, degraded_mode: bool = False) -> None:
         await asyncio.to_thread(
             self._exec,
-            "INSERT INTO engine_runs (ts, symbols_scanned, symbols_promoted, duration_ms) VALUES (?, ?, ?, ?)",
-            (_now_iso(), symbols_scanned, symbols_promoted, duration_ms),
+            """INSERT INTO engine_runs (ts, symbols_scanned, symbols_promoted, duration_ms, cpu_percent, rss_mb,
+                                         event_loop_lag_ms, degraded_mode)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+            (_now_iso(), symbols_scanned, symbols_promoted, duration_ms, cpu_percent, rss_mb, event_loop_lag_ms,
+             int(degraded_mode)),
         )
+
+    async def get_recent_engine_runs(self, limit: int = 30) -> list[dict]:
+        rows = await asyncio.to_thread(
+            self._query, "SELECT * FROM engine_runs ORDER BY id DESC LIMIT ?", (limit,)
+        )
+        return [dict(r) for r in rows]
+
+    # -- stablecoin anomaly monitor (mission 9) -------------------------------
+    async def insert_stablecoin_event(self, *, symbol: str, exchange: str, price: float, deviation_pct: float,
+                                       anomaly_type: str, severity: float) -> None:
+        await asyncio.to_thread(
+            self._exec,
+            """INSERT INTO stablecoin_events (ts, symbol, exchange, price, deviation_pct, anomaly_type, severity)
+               VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            (_now_iso(), symbol, exchange, price, deviation_pct, anomaly_type, severity),
+        )
+
+    async def get_recent_stablecoin_events(self, limit: int = 20) -> list[dict]:
+        rows = await asyncio.to_thread(
+            self._query, "SELECT * FROM stablecoin_events ORDER BY ts DESC LIMIT ?", (limit,)
+        )
+        return [dict(r) for r in rows]
 
     # -- reads for dashboard / KPIs -----------------------------------------
     async def get_recent_signals(self, limit: int = 50, classification: str | None = None) -> list[dict]:
@@ -265,15 +325,24 @@ class Ledger:
 
         return await asyncio.to_thread(_compute)
 
-    # -- early movers (missions 7/8) -----------------------------------------
+    # -- early movers (V1 missions 7/8, V1.1 mission 6/7) ---------------------
     async def insert_early_mover_event(self, *, symbol: str, exchange: str, direction: str,
-                                        t0_price: float, t0_confidence: float) -> int:
+                                        t0_price: float, t0_confidence: float,
+                                        starting_score: float | None = None, fast_score: float | None = None,
+                                        regime: str | None = None, second_exchange: str | None = None,
+                                        third_exchange: str | None = None, lead_time_ms: float | None = None,
+                                        confirmation_delay_ms: float | None = None,
+                                        price_move_before_confirmation: float | None = None) -> int:
         cur = await asyncio.to_thread(
             self._exec,
             """INSERT INTO early_mover_events (ts, symbol, exchange, direction, t0_price, t0_confidence,
+                                                starting_score, fast_score, regime, second_exchange, third_exchange,
+                                                lead_time_ms, confirmation_delay_ms, price_move_before_confirmation,
                                                 max_confidence, time_to_peak_s, status)
-               VALUES (?, ?, ?, ?, ?, ?, ?, 0, 'TRACKING')""",
-            (_now_iso(), symbol, exchange, direction, t0_price, t0_confidence, t0_confidence),
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 'TRACKING')""",
+            (_now_iso(), symbol, exchange, direction, t0_price, t0_confidence, starting_score, fast_score, regime,
+             second_exchange, third_exchange, lead_time_ms, confirmation_delay_ms, price_move_before_confirmation,
+             t0_confidence),
         )
         return cur.lastrowid
 
@@ -282,6 +351,22 @@ class Ledger:
             self._exec,
             "INSERT INTO early_mover_returns (event_id, horizon_s, pct_change, ts) VALUES (?, ?, ?, ?)",
             (event_id, horizon_s, pct_change, ts),
+        )
+
+    async def update_early_mover_progress(self, event_id: int, **fields) -> None:
+        """Incremental updates for time-to-X fields, set once when first reached
+        (see EarlyMoverTracker) - only known column names are accepted."""
+        allowed = {
+            "time_to_mfe_s", "time_to_mae_s", "time_to_025_s", "time_to_050_s", "time_to_100_s",
+            "price_move_after_confirmation",
+        }
+        cols = [c for c in fields if c in allowed]
+        if not cols:
+            return
+        set_clause = ", ".join(f"{c}=?" for c in cols)
+        await asyncio.to_thread(
+            self._exec, f"UPDATE early_mover_events SET {set_clause} WHERE id=?",
+            (*[fields[c] for c in cols], event_id),
         )
 
     async def finalize_early_mover_event(self, event_id: int, *, max_confidence: float, time_to_peak_s: float,

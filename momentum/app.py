@@ -16,13 +16,16 @@ import time
 
 import uvicorn
 
+from momentum.compute_budget import ComputeBudget
 from momentum.config import Config, load_config
 from momentum.dashboard.api import create_app
 from momentum.data.state import StateStore, SymbolState
 from momentum.engines import (
     acceleration, breakout, cross_exchange, exchange_quality,
-    exhaustion as exhaustion_engine, multi_timeframe, orderbook_imbalance, orderflow,
-    regime as regime_engine, velocity, volatility_expansion, volume as volume_engine,
+    exhaustion as exhaustion_engine, fast_movers as fast_movers_engine, late_entry,
+    multi_timeframe, orderbook_imbalance, orderflow,
+    regime as regime_engine, stablecoin, starting as starting_engine,
+    velocity, volatility_expansion, volume as volume_engine,
 )
 from momentum.engines.cross_exchange import LeadLagTracker
 from momentum.entry import entry_engine
@@ -46,6 +49,11 @@ logger = logging.getLogger("momentum.app")
 
 REGIME_ANCHOR_SYMBOLS = ("BTCUSDT", "ETHUSDT")
 EXCHANGE_PRIORITY = ("binance", "bybit", "okx")  # deterministic pick when multiple exchanges have data
+
+# V1.1 mission 2: Tier 1 broad radar horizons - down to 1s so a symbol that's
+# only just started moving gets flagged well before a 30s/1m window would show it.
+RADAR_HORIZONS_S = (1, 3, 5, 10, 15, 30, 60, 180, 300)
+RADAR_HORIZON_WEIGHTS = (1.5, 1.4, 1.3, 1.2, 1.1, 1.0, 0.8, 0.6, 0.5)
 
 WEIGHTED_ENGINES = {
     "velocity": velocity, "acceleration": acceleration, "volume": volume_engine,
@@ -83,16 +91,51 @@ def _reference_exchange(exchanges: list[str]) -> str:
 
 
 def _fast_score_one_exchange(store: StateStore, exchange: str, symbol: str, now: float, stage_a_cfg: dict) -> float:
+    """TIER 1 BROAD RADAR: cheap, multi-horizon (1s..5m), run against every
+    liquid symbol every cycle. Shorter horizons are weighted more heavily so a
+    symbol that's *just* starting to move gets flagged immediately, not only
+    once a slower 30s/1m window would show it too."""
     state = store.get(exchange, symbol)
     if state is None:
         return 0.0
-    v = state.velocity_pct(now, stage_a_cfg["velocity_horizon_s"])
-    if v is None:
+    velocities = [state.velocity_pct(now, h) for h in RADAR_HORIZONS_S]
+    pairs = [(v, w) for v, w in zip(velocities, RADAR_HORIZON_WEIGHTS) if v is not None]
+    if not pairs:
         return 0.0
+    weighted = sum(v * w for v, w in pairs) / sum(w for _, w in pairs)
+
     baseline = state.total_volume(now, 300) / 300
     recent = state.total_volume(now, stage_a_cfg["volume_horizon_s"]) / stage_a_cfg["volume_horizon_s"]
     vol_mult = min(3.0, max(1.0, (recent / baseline) if baseline > 0 else 1.0))
-    return v * vol_mult
+    return weighted * vol_mult
+
+
+def _apply_load_shedding(promoted_symbols: set[str], fast_scores: dict[str, float], degraded_mode: bool,
+                          degraded_promote_fraction: float) -> set[str]:
+    """Mission 13: if the previous cycle ran long, only the strongest candidates
+    (by |fast score|) keep the full Stage B suite this cycle - never the other
+    way around. Anchors (BTC/ETH, needed for regime) are always kept regardless."""
+    if not degraded_mode or len(promoted_symbols) <= 1:
+        return promoted_symbols
+    anchors = set(REGIME_ANCHOR_SYMBOLS) & promoted_symbols
+    rest = sorted(promoted_symbols - anchors, key=lambda s: abs(fast_scores.get(s, 0.0)), reverse=True)
+    keep_n = max(1, int(len(rest) * degraded_promote_fraction))
+    return anchors | set(rest[:keep_n])
+
+
+def _passes_liquidity_gate(state: SymbolState, now: float, universe_cfg: dict) -> bool:
+    """Mission 1: eliminate illiquid/wide-spread pairs before deep (Stage B)
+    analysis, using live book data (the REST 24h-volume filter alone can't see
+    live spread/depth, and volume can look fine while the book is thin)."""
+    spread_bps = state.spread_bps_now()
+    if spread_bps is None or spread_bps > universe_cfg["max_spread_bps_for_deep_analysis"]:
+        return False
+    price = state.price_now()
+    depth = state.latest_depth
+    if price is None or depth is None:
+        return False
+    depth_notional = (depth.bid_depth + depth.ask_depth) * price
+    return depth_notional >= universe_cfg["min_depth_notional_usd"]
 
 
 def _combined_fast_score(store: StateStore, exchanges: list[str], symbol: str, now: float, stage_a_cfg: dict) -> float:
@@ -124,10 +167,26 @@ def _run_stage_b_engines(state: SymbolState, now: float) -> dict:
     return {name: mod.compute(state, now) for name, mod in WEIGHTED_ENGINES.items()}
 
 
+def _serialize_engine_scores(engine_scores: dict) -> dict:
+    """Handles every engine's dataclass shape uniformly (EngineScore's up/down,
+    Exhaustion/LateEntry's up_risk/down_risk, FastMoverScore's direction/fast_score/
+    returns) so new engines don't need special-casing here or at every call site."""
+    out = {}
+    for k, v in engine_scores.items():
+        d = dict(getattr(v, "details", {}) or {})
+        for attr in ("up", "down", "up_risk", "down_risk", "fast_score", "direction", "returns"):
+            if hasattr(v, attr):
+                d[attr] = getattr(v, attr)
+        out[k] = d
+    return out
+
+
 def _candidate_view(symbol: str, primary_exchange: str, price: float, rank: dict, exhaustion,
                      entry_up, entry_down, quality_up, quality_down,
                      prev_fast: float, cur_fast: float, state: SymbolState,
-                     states_by_exchange: dict[str, SymbolState], cross_details: dict) -> dict:
+                     states_by_exchange: dict[str, SymbolState], cross_details: dict,
+                     starting: starting_engine.StartingScore, late: late_entry.LateEntryScore,
+                     fast_mover, regime_label: str, tier: str) -> dict:
     dominant = "up" if rank["UP"].confidence >= rank["DOWN"].confidence else "down"
     entry = entry_up if dominant == "up" else entry_down
     now = time.time()
@@ -141,13 +200,17 @@ def _candidate_view(symbol: str, primary_exchange: str, price: float, rank: dict
         "symbol": symbol,
         "primary_exchange": primary_exchange,
         "price": price,
+        "tier": tier,
+        "regime": regime_label,
         "up": {
             "confidence": rank["UP"].confidence, "classification": rank["UP"].classification,
-            "exhaustion_risk": exhaustion.up_risk,
+            "exhaustion_risk": exhaustion.up_risk, "late_entry_risk": late.up_risk,
+            "starting_score": starting.up,
         },
         "down": {
             "confidence": rank["DOWN"].confidence, "classification": rank["DOWN"].classification,
-            "exhaustion_risk": exhaustion.down_risk,
+            "exhaustion_risk": exhaustion.down_risk, "late_entry_risk": late.down_risk,
+            "starting_score": starting.down,
         },
         "entry_quality": entry.entry_quality,
         "entry_type": entry.entry_type,
@@ -162,6 +225,9 @@ def _candidate_view(symbol: str, primary_exchange: str, price: float, rank: dict
         "cross_exchange_classification": cross_details.get("classification"),
         "best_execution_up": quality_up.best_exchange if quality_up else None,
         "best_execution_down": quality_down.best_exchange if quality_down else None,
+        "fast_score": fast_mover.fast_score if fast_mover else None,
+        "fast_direction": fast_mover.direction if fast_mover else None,
+        "fast_returns": fast_mover.returns if fast_mover else None,
     }
 
 
@@ -188,22 +254,29 @@ async def stage_ab_loop(cfg: Config, store: StateStore, runtime: AppRuntime,
     reference_exchange = _reference_exchange(exchanges)
     stale_max_age_s = cfg.shadow_cfg["stale_data_max_age_s"]
     early_mover_cfg = cfg.early_mover_cfg
+    universe_cfg = cfg.universe
+    cb_cfg = cfg.compute_budget_cfg
+    compute_budget = ComputeBudget()
 
     prev_fast_scores: dict[str, float] = {}
     last_signal_log: dict[tuple[str, str], tuple[float, str]] = {}
     lead_lag_tracker = LeadLagTracker()
+    degraded_mode = False  # set from the *previous* cycle's duration - see bottom of loop
 
     while True:
         t0 = time.time()
         now = time.time()
 
-        canonical_symbols = runtime.tracked_symbols
+        # TIER 1 - BROAD RADAR: cheap multi-horizon scan over every momentum
+        # symbol (stablecoins excluded, see runtime.momentum_symbols).
+        canonical_symbols = runtime.momentum_symbols
         fast_scores = {sym: _combined_fast_score(store, exchanges, sym, now, stage_a_cfg) for sym in canonical_symbols}
         ranked_up = sorted(fast_scores.items(), key=lambda kv: kv[1], reverse=True)
         ranked_down = sorted(fast_scores.items(), key=lambda kv: kv[1])
 
         n = cfg.universe["stage_b_promote_count"]
         min_abs = stage_a_cfg["min_abs_fast_score"]
+        # TIER 2 - HOT WATCHLIST: anomalies promoted for deep analysis.
         promoted_symbols = set()
         for sym, score in ranked_up[:n]:
             if abs(score) >= min_abs:
@@ -213,8 +286,12 @@ async def stage_ab_loop(cfg: Config, store: StateStore, runtime: AppRuntime,
                 promoted_symbols.add(sym)
         promoted_symbols |= set(REGIME_ANCHOR_SYMBOLS) & set(canonical_symbols)
 
+        promoted_symbols = _apply_load_shedding(
+            promoted_symbols, fast_scores, degraded_mode, cb_cfg["degraded_promote_fraction"],
+        )
+
         regime = regime_engine.compute(store, reference_exchange, now,
-                                        runtime.tracked_symbols_by_exchange.get(reference_exchange, []))
+                                        runtime.momentum_symbols_by_exchange.get(reference_exchange, []))
 
         new_promoted = {}
         for sym in promoted_symbols:
@@ -222,14 +299,25 @@ async def stage_ab_loop(cfg: Config, store: StateStore, runtime: AppRuntime,
             primary_ex, primary_state = _pick_primary(states_by_exchange)
             if primary_state is None:
                 continue
+            # mission 1: illiquid/wide-spread pairs are eliminated right before
+            # deep analysis, using live book data - Stage A fast-scoring above is
+            # cheap enough to run on them, but they never reach Stage B.
+            if not _passes_liquidity_gate(primary_state, now, universe_cfg):
+                continue
             price = primary_state.price_now()
             if price is None:
                 continue
 
+            # TIER 3 - DEEP MULTI-ENGINE ANALYSIS.
             engine_scores = _run_stage_b_engines(primary_state, now)
             engine_scores["cross_exchange"] = cross_exchange.compute(sym, states_by_exchange, now, lead_lag_tracker)
             exhaustion = exhaustion_engine.compute(primary_state, now)
             rank = master_ranker.rank(engine_scores, exhaustion, regime, cfg.engine_weights, cfg.ranker_cfg)
+
+            starting = starting_engine.compute(primary_state, now, engine_scores, engine_scores["cross_exchange"])
+            late = late_entry.compute(primary_state, now)
+            engine_scores["starting"] = starting
+            engine_scores["late_entry"] = late
 
             fee_bps = broker.taker_fee_bps(primary_ex)
             reward_risk_mult = cfg.risk_cfg["reward_risk_target_multiple"]
@@ -240,6 +328,11 @@ async def stage_ab_loop(cfg: Config, store: StateStore, runtime: AppRuntime,
 
             quality_up = exchange_quality.compute("UP", states_by_exchange, now, cfg.shadow_cfg["taker_fee_bps_by_exchange"])
             quality_down = exchange_quality.compute("DOWN", states_by_exchange, now, cfg.shadow_cfg["taker_fee_bps_by_exchange"])
+
+            fast_mover = fast_movers_engine.compute(
+                primary_state, now, engine_scores, exhaustion,
+                max(late.up_risk, late.down_risk), engine_scores["cross_exchange"],
+            )
 
             cx_details = engine_scores["cross_exchange"].details
             leading = cx_details.get("leading_exchange")
@@ -254,16 +347,26 @@ async def stage_ab_loop(cfg: Config, store: StateStore, runtime: AppRuntime,
 
             prev_fast = prev_fast_scores.get(sym, 0.0)
             cur_fast = fast_scores.get(sym, 0.0)
+            tier = "TRADE_CANDIDATE" if (
+                rank["UP"].classification in ("CONFIRMED", "STRONG", "HIGH_CONVICTION")
+                or rank["DOWN"].classification in ("CONFIRMED", "STRONG", "HIGH_CONVICTION")
+            ) else "HOT_WATCHLIST"
             new_promoted[sym] = _candidate_view(sym, primary_ex, price, rank, exhaustion, entry_up, entry_down,
                                                  quality_up, quality_down, prev_fast, cur_fast, primary_state,
-                                                 states_by_exchange, cx_details)
+                                                 states_by_exchange, cx_details, starting, late, fast_mover,
+                                                 regime.regime_label, tier)
 
-            for direction, rres, entry, quality in (("UP", rank["UP"], entry_up, quality_up),
-                                                      ("DOWN", rank["DOWN"], entry_down, quality_down)):
+            for direction, rres, entry, quality, starting_score in (
+                ("UP", rank["UP"], entry_up, quality_up, starting.up),
+                ("DOWN", rank["DOWN"], entry_down, quality_down, starting.down),
+            ):
                 runtime.early_mover_tracker.update_confidence(sym, direction, rres.confidence, now)
                 await runtime.early_mover_tracker.maybe_register(
                     sym, primary_ex, direction, price, rres.confidence, now,
                     early_mover_cfg["confidence_threshold"],
+                    starting_score=starting_score,
+                    fast_score=fast_mover.fast_score if fast_mover else None,
+                    regime_label=regime.regime_label, cx_details=cx_details, state=primary_state,
                 )
 
                 if rres.classification == "IGNORE":
@@ -300,7 +403,7 @@ async def stage_ab_loop(cfg: Config, store: StateStore, runtime: AppRuntime,
                 signal_id = await runtime.ledger.insert_signal(
                     symbol=sym, exchange=primary_ex, direction=direction, price=price,
                     spread_bps=primary_state.spread_bps_now(),
-                    engine_scores={k: v.details | {"up": v.up, "down": v.down} for k, v in engine_scores.items()},
+                    engine_scores=_serialize_engine_scores(engine_scores),
                     momentum_confidence=rres.confidence, exhaustion_risk=rres.exhaustion_risk,
                     classification=rres.classification, entry_quality=entry.entry_quality,
                     entry_type=entry.entry_type, accepted=accept, reject_reason=reject_reason,
@@ -319,10 +422,19 @@ async def stage_ab_loop(cfg: Config, store: StateStore, runtime: AppRuntime,
         prev_fast_scores = fast_scores
         runtime.last_stage_a_scanned = len(canonical_symbols)
 
-        duration_ms = (time.time() - t0) * 1000
-        await runtime.ledger.record_engine_run(len(canonical_symbols), len(new_promoted), duration_ms)
-
         elapsed = time.time() - t0
+        duration_ms = elapsed * 1000
+        cpu_pct, rss_mb = compute_budget.sample()
+        event_loop_lag_ms = max(0.0, (elapsed - stage_a_cfg["cycle_interval_s"]) * 1000.0)
+        degraded_mode = elapsed > (stage_a_cfg["cycle_interval_s"] * cb_cfg["degrade_threshold_ratio"])
+        runtime.last_compute_budget = {
+            "cpu_percent": cpu_pct, "rss_mb": rss_mb, "event_loop_lag_ms": event_loop_lag_ms,
+            "degraded_mode": degraded_mode, "cycle_duration_ms": duration_ms,
+        }
+        await runtime.ledger.record_engine_run(len(canonical_symbols), len(new_promoted), duration_ms,
+                                                cpu_percent=cpu_pct, rss_mb=rss_mb,
+                                                event_loop_lag_ms=event_loop_lag_ms, degraded_mode=degraded_mode)
+
         await asyncio.sleep(max(0.1, stage_a_cfg["cycle_interval_s"] - elapsed))
 
 
@@ -430,6 +542,13 @@ async def digital_twin_loop(store: StateStore, digital_twin: DigitalTwin, early_
         await asyncio.sleep(1.0)
 
 
+def _split_stablecoins(symbols: list[str], quote_asset: str) -> tuple[list[str], list[str]]:
+    """mission 9: stablecoin pairs are separated out before anything else sees
+    them - the momentum universe never includes them."""
+    stable = [s for s in symbols if stablecoin.is_stablecoin_pair(s, quote_asset)]
+    return symbols, stable
+
+
 async def universe_refresh_loop(cfg: Config, runtime: AppRuntime):
     while True:
         await asyncio.sleep(cfg.universe["refresh_interval_s"])
@@ -447,10 +566,13 @@ async def universe_refresh_loop(cfg: Config, runtime: AppRuntime):
                 # exchange that's already streaming keeps its existing subscription set
                 # until a restart, per the documented V1 limitation (see stage_ab_loop docstring)
                 if symbols and not runtime.tracked_symbols_by_exchange.get(exchange):
+                    all_symbols, stable_symbols = _split_stablecoins(symbols, cfg.universe["quote_asset"])
                     runtime.tracked_symbols_by_exchange[exchange] = list(
-                        dict.fromkeys(symbols + list(REGIME_ANCHOR_SYMBOLS))
+                        dict.fromkeys(all_symbols + list(REGIME_ANCHOR_SYMBOLS))
                     )
-                    logger.info("%s: universe recovered, %d symbols now tracked", exchange, len(symbols))
+                    runtime.stablecoin_symbols_by_exchange[exchange] = stable_symbols
+                    logger.info("%s: universe recovered, %d symbols now tracked (%d stablecoin)",
+                                exchange, len(symbols), len(stable_symbols))
             except Exception:
                 logger.exception("universe refresh failed for %s", exchange)
 
@@ -472,6 +594,46 @@ async def _stream_exchange_supervisor(exchange: str, adapter: ExchangeAdapter, r
         except Exception:
             logger.exception("%s: stream_market_data supervisor caught an unexpected crash, restarting in 10s", exchange)
         await asyncio.sleep(10)
+
+
+STABLECOIN_MONITOR_INTERVAL_S = 5.0
+STABLECOIN_EVENT_COOLDOWN_S = 60.0
+
+
+async def stablecoin_monitor_loop(store: StateStore, runtime: AppRuntime) -> None:
+    """mission 9: a completely separate, lightweight monitor - never feeds the
+    momentum ranker, never mixes stablecoin PnL/signals into the normal
+    dataset. Runs independently of Stage A/B so a busy momentum cycle never
+    delays a depeg detection."""
+    last_logged: dict[tuple[str, str, str], float] = {}
+    while True:
+        now = time.time()
+        snapshot = {}
+        for exchange, symbols in runtime.stablecoin_symbols_by_exchange.items():
+            for sym in symbols:
+                state = store.get(exchange, sym)
+                if state is None or state.is_stale(now):
+                    continue
+                check = stablecoin.compute(state, now)
+                if check is None:
+                    continue
+                snapshot[f"{exchange}:{sym}"] = {
+                    "symbol": sym, "exchange": exchange, "price": check.price,
+                    "deviation_pct": check.deviation_pct, "anomalies": check.anomalies,
+                }
+                for anomaly in check.anomalies:
+                    key = (sym, exchange, anomaly["type"])
+                    if now - last_logged.get(key, 0.0) < STABLECOIN_EVENT_COOLDOWN_S:
+                        continue
+                    last_logged[key] = now
+                    await runtime.ledger.insert_stablecoin_event(
+                        symbol=sym, exchange=exchange, price=check.price, deviation_pct=check.deviation_pct,
+                        anomaly_type=anomaly["type"], severity=anomaly["severity"],
+                    )
+                    logger.warning("STABLECOIN ANOMALY %s @ %s: %s (severity=%.0f)",
+                                    sym, exchange, anomaly["type"], anomaly["severity"])
+        runtime.stablecoin_snapshot = snapshot
+        await asyncio.sleep(STABLECOIN_MONITOR_INTERVAL_S)
 
 
 async def restore_open_trades(runtime: AppRuntime, open_trades: dict[int, RuntimeTradeState]) -> None:
@@ -521,10 +683,17 @@ async def main():
     discovery_results = await asyncio.gather(*(_discover_one(ex, u) for ex, u in universes.items()))
 
     tracked_by_exchange: dict[str, list[str]] = {}
+    stablecoin_by_exchange: dict[str, list[str]] = {}
     universe_size_by_exchange: dict[str, int] = {}
     for ex, symbols in discovery_results:
         universe_size_by_exchange[ex] = len(symbols)
-        tracked_by_exchange[ex] = list(dict.fromkeys(symbols + list(REGIME_ANCHOR_SYMBOLS))) if symbols else []
+        if symbols:
+            all_symbols, stable_symbols = _split_stablecoins(symbols, cfg.universe["quote_asset"])
+            tracked_by_exchange[ex] = list(dict.fromkeys(all_symbols + list(REGIME_ANCHOR_SYMBOLS)))
+            stablecoin_by_exchange[ex] = stable_symbols
+        else:
+            tracked_by_exchange[ex] = []
+            stablecoin_by_exchange[ex] = []
 
     store = StateStore()
     digital_twin = DigitalTwin(cfg.twin_horizons_s, ledger)
@@ -533,7 +702,8 @@ async def main():
         shadow_mode=cfg.shadow_mode, real_orders=cfg.real_orders, exchanges=cfg.exchanges,
         start_time=time.time(), ledger=ledger, digital_twin=digital_twin, early_mover_tracker=early_mover_tracker,
         universe_by_exchange=universes, health=health,
-        tracked_symbols_by_exchange=tracked_by_exchange, universe_size_by_exchange=universe_size_by_exchange,
+        tracked_symbols_by_exchange=tracked_by_exchange, stablecoin_symbols_by_exchange=stablecoin_by_exchange,
+        universe_size_by_exchange=universe_size_by_exchange,
     )
 
     broker = ShadowBroker(cfg.shadow_cfg)
@@ -559,6 +729,7 @@ async def main():
         exit_loop(cfg, store, runtime, broker, open_trades),
         digital_twin_loop(store, digital_twin, early_mover_tracker),
         universe_refresh_loop(cfg, runtime),
+        stablecoin_monitor_loop(store, runtime),
         server.serve(),
     )
 

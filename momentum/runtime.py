@@ -23,15 +23,38 @@ class AppRuntime:
     universe_by_exchange: dict[str, Universe]
     health: HealthRegistry
     tracked_symbols_by_exchange: dict[str, list[str]] = field(default_factory=dict)
+    # V1.1 mission 9: stablecoin pairs still get live data (tracked_symbols_by_exchange
+    # includes them, for WS subscription) but are excluded from momentum_symbols - the
+    # Stage A/B loop never sees them, they only feed the separate stablecoin monitor.
+    stablecoin_symbols_by_exchange: dict[str, list[str]] = field(default_factory=dict)
     universe_size_by_exchange: dict[str, int] = field(default_factory=dict)
     promoted: dict = field(default_factory=dict)   # canonical symbol -> dashboard candidate dict
     last_stage_a_scanned: int = 0
+    last_compute_budget: dict = field(default_factory=dict)
+    stablecoin_snapshot: dict = field(default_factory=dict)  # symbol -> latest StablecoinCheck-derived dict
 
     @property
     def tracked_symbols(self) -> list[str]:
-        """Union of every canonical symbol tracked on any exchange."""
+        """Union of every canonical symbol tracked (incl. stablecoins) on any exchange."""
         seen: dict[str, None] = {}
         for symbols in self.tracked_symbols_by_exchange.values():
+            for s in symbols:
+                seen[s] = None
+        return list(seen)
+
+    @property
+    def momentum_symbols_by_exchange(self) -> dict[str, list[str]]:
+        out = {}
+        for ex, symbols in self.tracked_symbols_by_exchange.items():
+            stables = set(self.stablecoin_symbols_by_exchange.get(ex, []))
+            out[ex] = [s for s in symbols if s not in stables]
+        return out
+
+    @property
+    def momentum_symbols(self) -> list[str]:
+        """Union of every non-stablecoin canonical symbol - what Stage A/B actually scans."""
+        seen: dict[str, None] = {}
+        for symbols in self.momentum_symbols_by_exchange.values():
             for s in symbols:
                 seen[s] = None
         return list(seen)
@@ -42,10 +65,10 @@ class AppRuntime:
 
     @property
     def common_symbols(self) -> list[str]:
-        """Symbols tracked on 2+ exchanges - the population the cross-exchange
+        """Momentum symbols tracked on 2+ exchanges - the population the cross-exchange
         confirmation engine actually has something to confirm against."""
         counts: dict[str, int] = {}
-        for symbols in self.tracked_symbols_by_exchange.values():
+        for symbols in self.momentum_symbols_by_exchange.values():
             for s in symbols:
                 counts[s] = counts.get(s, 0) + 1
         return [s for s, c in counts.items() if c >= 2]

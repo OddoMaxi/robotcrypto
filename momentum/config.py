@@ -61,6 +61,10 @@ class Config:
         return self.raw["engines"]["early_mover"]
 
     @property
+    def compute_budget_cfg(self) -> dict:
+        return self.raw["compute_budget"]
+
+    @property
     def ranker_cfg(self) -> dict:
         return self.raw["ranker"]
 

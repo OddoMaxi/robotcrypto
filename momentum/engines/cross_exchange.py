@@ -44,11 +44,13 @@ class LeadLagTracker:
         self._episodes: dict[str, _SymbolLeadLagState] = {}
 
     def update(self, symbol: str, velocities_10s: dict[str, float], now: float) -> dict:
-        """Returns {'leading_exchange', 'lead_time_ms': {exchange: ms}, 'new_confirmation': exchange|None}"""
+        """Returns {'leading_exchange', 'lead_time_ms': {exchange: ms}, 'onset_ts': {exchange: abs ts},
+        'new_confirmation': exchange|None}. `onset_ts` carries real (not fabricated) absolute
+        timestamps so callers (see shadow/early_mover.py) can look up actual historical prices."""
         active = {ex: v for ex, v in velocities_10s.items() if abs(v) >= ONSET_THRESHOLD_PCT}
         if not active:
             self._episodes.pop(symbol, None)
-            return {"leading_exchange": None, "lead_time_ms": {}, "new_confirmation": None}
+            return {"leading_exchange": None, "lead_time_ms": {}, "onset_ts": {}, "new_confirmation": None}
 
         dominant_dir = "UP" if sum(1 for v in active.values() if v > 0) >= sum(1 for v in active.values() if v < 0) else "DOWN"
         same_dir = {ex for ex, v in active.items() if (v > 0) == (dominant_dir == "UP")}
@@ -72,11 +74,14 @@ class LeadLagTracker:
                     ep.below_since.pop(ex, None)
 
         if not ep.onset_ts:
-            return {"leading_exchange": None, "lead_time_ms": {}, "new_confirmation": None}
+            return {"leading_exchange": None, "lead_time_ms": {}, "onset_ts": {}, "new_confirmation": None}
 
         leader = min(ep.onset_ts, key=ep.onset_ts.get)
         lead_time_ms = {ex: (ts - ep.onset_ts[leader]) * 1000.0 for ex, ts in ep.onset_ts.items()}
-        return {"leading_exchange": leader, "lead_time_ms": lead_time_ms, "new_confirmation": new_confirmation}
+        return {
+            "leading_exchange": leader, "lead_time_ms": lead_time_ms,
+            "onset_ts": dict(ep.onset_ts), "new_confirmation": new_confirmation,
+        }
 
 
 def _direction(v: float | None) -> str:
@@ -198,5 +203,6 @@ def compute(
         "classification": classification,
         "leading_exchange": lead_lag["leading_exchange"],
         "lead_time_ms": lead_lag["lead_time_ms"],
+        "onset_ts": lead_lag["onset_ts"],
         "new_confirmation": lead_lag["new_confirmation"],
     })

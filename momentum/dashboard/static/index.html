@@ -64,11 +64,24 @@
   <span class="stat">common symbols <b id="common-symbols">-</b></span>
   <span class="stat">promoted <b id="promoted">-</b></span>
   <span class="stat">twin/early pending <b id="pending">-</b></span>
+  <span class="stat">cpu/ram <b id="compute-budget">-</b></span>
 </header>
 <main>
   <div class="kpis" id="kpis"></div>
 
   <div class="cols3" id="exchange-cards"></div>
+
+  <div class="panel scroll-x">
+    <h2>🔥 Fast Movers Now</h2>
+    <table id="fast-movers-table"><thead></thead><tbody></tbody></table>
+    <div class="note">Dynamic ranking of what's moving right now (1s-1m returns + engines) - never triggers a trade on its own.</div>
+  </div>
+
+  <div class="panel scroll-x">
+    <h2>⚡ Momentum Starting</h2>
+    <table id="starting-table"><thead></thead><tbody></tbody></table>
+    <div class="note">Pattern-match on the combination that typically *precedes* a move - a symbol can score high here before it ever shows up above.</div>
+  </div>
 
   <div class="cols">
     <div class="panel scroll-x">
@@ -88,11 +101,11 @@
 
   <div class="cols">
     <div class="panel scroll-x">
-      <h2><span class="dot up"></span>Early UP Movers</h2>
+      <h2>🚀 <span class="dot up"></span>Early UP Movers</h2>
       <table id="early-up-table"><thead></thead><tbody></tbody></table>
     </div>
     <div class="panel scroll-x">
-      <h2><span class="dot down"></span>Early DOWN Movers</h2>
+      <h2>🚀 <span class="dot down"></span>Early DOWN Movers</h2>
       <table id="early-down-table"><thead></thead><tbody></tbody></table>
     </div>
   </div>
@@ -107,6 +120,11 @@
       <h2>Strategy / Direction Performance (never pooled)</h2>
       <table id="strategy-table"><thead></thead><tbody></tbody></table>
     </div>
+  </div>
+
+  <div class="panel scroll-x">
+    <h2>Stablecoin Anomaly Monitor (isolated from momentum ranking)</h2>
+    <table id="stablecoin-table"><thead></thead><tbody></tbody></table>
   </div>
 </main>
 
@@ -134,6 +152,9 @@ async function refreshStatus() {
   document.getElementById('common-symbols').textContent = s.common_symbols;
   document.getElementById('promoted').textContent = s.symbols_promoted;
   document.getElementById('pending').textContent = s.digital_twin_pending + ' / ' + s.early_mover_pending;
+  const cb = s.compute_budget || {};
+  document.getElementById('compute-budget').textContent =
+    fmt(cb.cpu_percent, 0) + '% / ' + fmt(cb.rss_mb, 0) + 'MB' + (cb.degraded_mode ? ' ⚠ DEGRADED' : '');
 }
 
 async function refreshExchanges() {
@@ -196,6 +217,79 @@ async function refreshMovers() {
   const m = await j('/api/movers');
   renderMomentumTable('up-table', m.up, 'up');
   renderMomentumTable('down-table', m.down, 'down');
+}
+
+async function refreshFastMovers() {
+  const m = await j('/api/fast_movers');
+  const table = document.getElementById('fast-movers-table');
+  table.querySelector('thead').innerHTML = `<tr>
+    <th>Symbol</th><th>Dir</th><th>Price</th><th>1s</th><th>5s</th><th>10s</th><th>30s</th><th>1m</th>
+    <th>Fast Score</th><th>Exchanges</th><th>Leader</th><th>Exhaustion</th>
+  </tr>`;
+  const rows = m.fast_movers || [];
+  if (!rows.length) {
+    table.querySelector('tbody').innerHTML = `<tr><td colspan="12" class="empty">NO FAST MOVERS RIGHT NOW</td></tr>`;
+    return;
+  }
+  table.querySelector('tbody').innerHTML = rows.map(c => {
+    const r = c.fast_returns || {};
+    const dirKey = (c.fast_direction || 'UP').toLowerCase();
+    const risk = c[dirKey] ? c[dirKey].exhaustion_risk : null;
+    return `<tr>
+      <td>${c.symbol}</td><td>${c.fast_direction || '—'}</td><td>${fmt(c.price, 6)}</td>
+      <td class="${pnlClass(r['1s'])}">${fmt(r['1s'], 3)}%</td>
+      <td class="${pnlClass(r['5s'])}">${fmt(r['5s'], 3)}%</td>
+      <td class="${pnlClass(r['10s'])}">${fmt(r['10s'], 3)}%</td>
+      <td class="${pnlClass(r['30s'])}">${fmt(r['30s'], 3)}%</td>
+      <td class="${pnlClass(r['60s'])}">${fmt(r['60s'], 3)}%</td>
+      <td><b>${fmt(c.fast_score, 1)}</b></td>
+      <td>${Object.keys(c.exchanges || {}).join(', ')}</td>
+      <td>${c.leading_exchange || '—'}</td>
+      <td>${fmt(risk, 1)}</td>
+    </tr>`;
+  }).join('');
+}
+
+async function refreshStarting() {
+  const m = await j('/api/starting');
+  const table = document.getElementById('starting-table');
+  table.querySelector('thead').innerHTML = `<tr>
+    <th>Symbol</th><th>Up/Down</th><th>Starting Score</th><th>Acceleration</th>
+    <th>Volume Accel</th><th>Order Flow</th><th>Book Imbalance</th><th>Cross-Exchange</th><th>Status</th>
+  </tr>`;
+  const rows = (m.starting || []).filter(c => Math.max(c.up.starting_score, c.down.starting_score) > 0);
+  if (!rows.length) {
+    table.querySelector('tbody').innerHTML = `<tr><td colspan="9" class="empty">nothing starting right now</td></tr>`;
+    return;
+  }
+  table.querySelector('tbody').innerHTML = rows.map(c => {
+    const upDom = c.up.starting_score >= c.down.starting_score;
+    const d = upDom ? c.up : c.down;
+    return `<tr>
+      <td>${c.symbol}</td><td>${upDom ? 'UP' : 'DOWN'}</td><td><b>${fmt(d.starting_score, 0)}</b></td>
+      <td>${fmt(c.velocity_10s, 3)}%</td><td>${fmt(c.volume_ratio, 2)}x</td>
+      <td>${d.classification}</td><td>${c.cross_exchange_classification || '—'}</td>
+      <td>${c.leading_exchange || '—'}</td><td>${c.tier}</td>
+    </tr>`;
+  }).join('');
+}
+
+async function refreshStablecoins() {
+  const s = await j('/api/stablecoins');
+  const table = document.getElementById('stablecoin-table');
+  table.querySelector('thead').innerHTML = `<tr>
+    <th>Symbol</th><th>Exchange</th><th>Price</th><th>Deviation %</th><th>Anomalies</th>
+  </tr>`;
+  const rows = s.snapshot || [];
+  if (!rows.length) {
+    table.querySelector('tbody').innerHTML = `<tr><td colspan="5" class="empty">no stablecoin pairs tracked yet</td></tr>`;
+    return;
+  }
+  table.querySelector('tbody').innerHTML = rows.map(r => `<tr>
+    <td>${r.symbol}</td><td>${r.exchange}</td><td>${fmt(r.price, 5)}</td>
+    <td class="${pnlClass(r.deviation_pct)}">${fmt(r.deviation_pct, 4)}%</td>
+    <td>${(r.anomalies || []).map(a => a.type).join(', ') || '—'}</td>
+  </tr>`).join('');
 }
 
 function renderEarlyMoverTable(tableId, rows) {
@@ -305,8 +399,8 @@ function closeOverlay() { document.getElementById('overlay').style.display = 'no
 async function refreshAll() {
   try {
     await Promise.all([
-      refreshStatus(), refreshExchanges(), refreshKpis(), refreshMovers(),
-      refreshEarlyMovers(), refreshLeaderLag(), refreshStrategyKpis(), refreshTrades(),
+      refreshStatus(), refreshExchanges(), refreshKpis(), refreshFastMovers(), refreshStarting(), refreshMovers(),
+      refreshEarlyMovers(), refreshLeaderLag(), refreshStrategyKpis(), refreshTrades(), refreshStablecoins(),
     ]);
   } catch (e) { console.error(e); }
 }

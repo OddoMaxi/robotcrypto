@@ -20,6 +20,19 @@ universe:
     binance: 60
     bybit: 40
     okx: 40
+  # V1.1 mission 1: eliminate illiquid/wide-spread pairs before deep (Stage B)
+  # analysis, using *live* book data - the REST min_quote_volume_24h filter above
+  # only screens at discovery time and can't see live spread/depth.
+  max_spread_bps_for_deep_analysis: 50
+  min_depth_notional_usd: 500
+
+# V1.1 mission 13: the VPS has 2 cores shared with the arbitrage bot. When a
+# Stage A/B cycle runs long, only the weakest candidates (by |fast score|) get
+# demoted to a lighter pass next cycle - strong candidates always keep the
+# full engine suite; this never skips a safety check on a real contender.
+compute_budget:
+  degrade_threshold_ratio: 0.8          # cycle took > this fraction of cycle_interval_s -> shed load next cycle
+  degraded_promote_fraction: 0.5        # keep only the top this-fraction of candidates for full Stage B while degraded
 
 horizons_s: [5, 10, 15, 30, 60, 180, 300, 900]   # 5s .. 15m
 twin_horizons_s: [5, 10, 15, 30, 60, 120, 180, 300, 600]

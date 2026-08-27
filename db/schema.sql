@@ -83,10 +83,15 @@ CREATE TABLE IF NOT EXISTS engine_runs (
     ts TEXT NOT NULL,
     symbols_scanned INTEGER NOT NULL,
     symbols_promoted INTEGER NOT NULL,
-    duration_ms REAL NOT NULL
+    duration_ms REAL NOT NULL,
+    cpu_percent REAL,
+    rss_mb REAL,
+    event_loop_lag_ms REAL,
+    degraded_mode INTEGER NOT NULL DEFAULT 0
 );
 
--- missions 7/8: early up/down movers, tracked from first significant anomaly (T0)
+-- missions 7/8 (V1) + V1.1 mission 6: early up/down movers, tracked from first
+-- significant anomaly (T0). exchange = FIRST_EXCHANGE (where first detected).
 CREATE TABLE IF NOT EXISTS early_mover_events (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     ts TEXT NOT NULL,
@@ -95,10 +100,24 @@ CREATE TABLE IF NOT EXISTS early_mover_events (
     direction TEXT NOT NULL CHECK (direction IN ('UP','DOWN')),
     t0_price REAL NOT NULL,
     t0_confidence REAL NOT NULL,
+    starting_score REAL,
+    fast_score REAL,
+    regime TEXT,
+    second_exchange TEXT,
+    third_exchange TEXT,
+    lead_time_ms REAL,
+    confirmation_delay_ms REAL,
+    price_move_before_confirmation REAL,
+    price_move_after_confirmation REAL,
     max_confidence REAL,
     time_to_peak_s REAL,
     mfe_pct REAL,
     mae_pct REAL,
+    time_to_mfe_s REAL,
+    time_to_mae_s REAL,
+    time_to_025_s REAL,
+    time_to_050_s REAL,
+    time_to_100_s REAL,
     status TEXT NOT NULL DEFAULT 'TRACKING' CHECK (status IN ('TRACKING','DONE'))
 );
 CREATE INDEX IF NOT EXISTS idx_early_mover_symbol ON early_mover_events(symbol, ts);
@@ -124,3 +143,17 @@ CREATE TABLE IF NOT EXISTS leader_lag_events (
     lead_time_ms REAL NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_leader_lag_symbol ON leader_lag_events(symbol);
+
+-- mission 9 (V1.1): stablecoin pairs are monitored separately, never mixed into
+-- the normal momentum ranking/dataset
+CREATE TABLE IF NOT EXISTS stablecoin_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts TEXT NOT NULL,
+    symbol TEXT NOT NULL,
+    exchange TEXT NOT NULL,
+    price REAL NOT NULL,
+    deviation_pct REAL NOT NULL,
+    anomaly_type TEXT NOT NULL CHECK (anomaly_type IN ('DEPEG','ABNORMAL_VOLATILITY','ABNORMAL_VOLUME')),
+    severity REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_stablecoin_symbol_ts ON stablecoin_events(symbol, ts);

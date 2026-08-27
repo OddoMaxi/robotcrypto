@@ -29,12 +29,20 @@ def create_app(runtime) -> FastAPI:
             "universe_size_by_exchange": runtime.universe_size_by_exchange,
             "symbols_tracked": len(runtime.tracked_symbols),
             "symbols_tracked_by_exchange": {ex: len(s) for ex, s in runtime.tracked_symbols_by_exchange.items()},
+            "momentum_symbols": len(runtime.momentum_symbols),
+            "stablecoin_symbols": sum(len(s) for s in runtime.stablecoin_symbols_by_exchange.values()),
             "common_symbols": len(common),
             "symbols_promoted": len(runtime.promoted),
             "digital_twin_pending": runtime.digital_twin.pending_count,
             "early_mover_pending": runtime.early_mover_tracker.pending_count,
             "last_stage_a_cycle_symbols": runtime.last_stage_a_scanned,
+            "compute_budget": runtime.last_compute_budget,
         }
+
+    @app.get("/api/compute_budget")
+    async def compute_budget():
+        recent = await runtime.ledger.get_recent_engine_runs(limit=30)
+        return {"current": runtime.last_compute_budget, "recent_cycles": recent}
 
     @app.get("/api/exchanges")
     async def exchanges():
@@ -63,6 +71,29 @@ def create_app(runtime) -> FastAPI:
     @app.get("/api/leader_lag")
     async def leader_lag():
         return {"stats": await runtime.ledger.get_leader_lag_stats()}
+
+    @app.get("/api/fast_movers")
+    async def fast_movers():
+        candidates = [c for c in runtime.promoted.values() if c.get("fast_score") is not None]
+        ranked = sorted(candidates, key=lambda c: c["fast_score"], reverse=True)[:10]
+        return {"fast_movers": ranked}
+
+    @app.get("/api/starting")
+    async def starting():
+        candidates = list(runtime.promoted.values())
+        ranked = sorted(
+            candidates,
+            key=lambda c: max(c["up"]["starting_score"], c["down"]["starting_score"]),
+            reverse=True,
+        )[:10]
+        return {"starting": ranked}
+
+    @app.get("/api/stablecoins")
+    async def stablecoins():
+        return {
+            "snapshot": list(runtime.stablecoin_snapshot.values()),
+            "recent_events": await runtime.ledger.get_recent_stablecoin_events(limit=20),
+        }
 
     @app.get("/api/trades")
     async def trades():

@@ -37,7 +37,10 @@ class RegimeContext:
     eth_velocity_60s: float | None
     breadth_pct_up: float | None       # % of tracked universe with positive 60s velocity
     breadth_pct_down: float | None
-    cross_exchange_confirmed_fraction: float  # 1.0 stub in Binance-only V1 (see regime.py)
+    cross_exchange_confirmed_fraction: float  # legacy/unused - real cross-exchange confirmation
+                                               # is its own weighted engine (see cross_exchange.py)
     bias_up: float    # multiplier applied to UP confidence, near 1.0 = neutral
     bias_down: float
+    regime_label: str = "UNKNOWN"  # V1.1 mission 10: MARKET_RISK_ON/OFF, BROAD_UPTREND/DOWNTREND,
+                                    # CHOP, VOLATILITY_EXPANSION, PANIC - context only, never a hard filter
     details: dict = field(default_factory=dict)
