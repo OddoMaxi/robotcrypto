@@ -55,6 +55,13 @@ EXCHANGE_PRIORITY = ("binance", "bybit", "okx")  # deterministic pick when multi
 RADAR_HORIZONS_S = (1, 3, 5, 10, 15, 30, 60, 180, 300)
 RADAR_HORIZON_WEIGHTS = (1.5, 1.4, 1.3, 1.2, 1.1, 1.0, 0.8, 0.6, 0.5)
 
+# The watchlist tier can be a much larger population than the momentum universe
+# (hundreds of long-tail pairs) and is monitoring-only - never traded - so it's
+# scanned far less often and with a single cheap horizon rather than the full
+# weighted radar every 2s.
+WATCHLIST_SCAN_EVERY_N_CYCLES = 10
+WATCHLIST_VELOCITY_HORIZON_S = 10
+
 WEIGHTED_ENGINES = {
     "velocity": velocity, "acceleration": acceleration, "volume": volume_engine,
     "orderflow": orderflow, "orderbook_imbalance": orderbook_imbalance, "breakout": breakout,
@@ -262,6 +269,7 @@ async def stage_ab_loop(cfg: Config, store: StateStore, runtime: AppRuntime,
     last_signal_log: dict[tuple[str, str], tuple[float, str]] = {}
     lead_lag_tracker = LeadLagTracker()
     degraded_mode = False  # set from the *previous* cycle's duration - see bottom of loop
+    cycle_count = 0
 
     while True:
         t0 = time.time()
@@ -424,23 +432,29 @@ async def stage_ab_loop(cfg: Config, store: StateStore, runtime: AppRuntime,
 
         # Sub-threshold WATCHLIST tier: Tier-1-only visibility (price + fast
         # score), structurally never promoted to Stage B/trading - these
-        # symbols never enter `promoted_symbols` above.
-        watchlist_snapshot = {}
-        for sym in runtime.watchlist_symbols:
-            states_by_exchange = _states_by_exchange(store, exchanges, sym, now, stale_max_age_s)
-            primary_ex, primary_state = _pick_primary(states_by_exchange)
-            if primary_state is None:
-                continue
-            price = primary_state.price_now()
-            if price is None:
-                continue
-            watchlist_snapshot[sym] = {
-                "symbol": sym, "primary_exchange": primary_ex, "price": price,
-                "fast_score": _combined_fast_score(store, exchanges, sym, now, stage_a_cfg),
-                "velocity_10s": primary_state.velocity_pct(now, 10),
-                "exchanges": list(states_by_exchange.keys()),
-            }
-        runtime.watchlist_snapshot = watchlist_snapshot
+        # symbols never enter `promoted_symbols` above. This population can be
+        # much larger than the momentum universe (hundreds of long-tail pairs),
+        # so it's scanned far less often and with a single cheap horizon - it's
+        # a monitoring panel, not a trading path, so 20s-stale numbers are fine
+        # and keeping it on the 2s momentum cadence was needlessly expensive.
+        cycle_count += 1
+        if cycle_count % WATCHLIST_SCAN_EVERY_N_CYCLES == 0:
+            watchlist_snapshot = {}
+            for sym in runtime.watchlist_symbols:
+                states_by_exchange = _states_by_exchange(store, exchanges, sym, now, stale_max_age_s)
+                primary_ex, primary_state = _pick_primary(states_by_exchange)
+                if primary_state is None:
+                    continue
+                price = primary_state.price_now()
+                if price is None:
+                    continue
+                watchlist_snapshot[sym] = {
+                    "symbol": sym, "primary_exchange": primary_ex, "price": price,
+                    "fast_score": primary_state.velocity_pct(now, WATCHLIST_VELOCITY_HORIZON_S),
+                    "velocity_10s": primary_state.velocity_pct(now, 10),
+                    "exchanges": list(states_by_exchange.keys()),
+                }
+            runtime.watchlist_snapshot = watchlist_snapshot
 
         elapsed = time.time() - t0
         duration_ms = elapsed * 1000
