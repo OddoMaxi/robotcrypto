@@ -19,6 +19,10 @@ FORBIDDEN_IDENTIFIERS = {
 FORBIDDEN_IMPORT_HINTS = {
     "binance.client",  # python-binance's authenticated trading client
     "ccxt",            # not used in V1; would be the path to a live trading client
+    "pybit",            # Bybit's official SDK includes an authenticated trading client
+    "okx",              # python-okx's Trade/Account modules are authenticated
+    "okx.Trade",
+    "okx.Account",
 }
 
 

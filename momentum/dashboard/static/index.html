@@ -24,9 +24,11 @@
   .kpi .value { font-size: 18px; font-weight: 600; margin-top: 4px; }
   .pos { color: var(--up); } .neg { color: var(--down); }
   .cols { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
-  @media (max-width: 900px) { .cols { grid-template-columns: 1fr; } }
+  .cols3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; }
+  @media (max-width: 900px) { .cols, .cols3 { grid-template-columns: 1fr; } }
   .panel { background: var(--panel); border: 1px solid var(--border); border-radius: 6px; overflow: hidden; }
   .panel h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); margin: 0; padding: 10px 12px; border-bottom: 1px solid var(--border); }
+  .scroll-x { overflow-x: auto; }
   table { width: 100%; border-collapse: collapse; }
   th, td { text-align: left; padding: 6px 10px; border-bottom: 1px solid var(--border); white-space: nowrap; }
   th { color: var(--muted); font-weight: 500; font-size: 11px; }
@@ -39,45 +41,72 @@
   .tag.STRONG { background: #1f3a2f; color: var(--up); }
   .tag.HIGH_CONVICTION { background: #123322; color: #4be39a; font-weight: 700; }
   .tag.EXHAUSTED { background: #3a1f24; color: var(--down); }
+  .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; }
+  .dot.up { background: var(--up); } .dot.down { background: var(--down); }
   .empty { color: var(--muted); padding: 16px; text-align: center; }
   #overlay { display: none; position: fixed; inset: 0; background: rgba(0,0,0,.6); align-items: center; justify-content: center; z-index: 10; }
-  #overlay .box { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; max-width: 640px; width: 90%; max-height: 80vh; overflow: auto; padding: 16px; }
+  #overlay .box { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; max-width: 680px; width: 90%; max-height: 80vh; overflow: auto; padding: 16px; }
   #overlay pre { white-space: pre-wrap; word-break: break-word; font-size: 12px; color: var(--muted); }
   .close-btn { float: right; cursor: pointer; color: var(--muted); }
   .note { color: var(--muted); font-size: 11px; padding: 8px 12px; }
+  .exch-card { background: var(--panel); border: 1px solid var(--border); border-radius: 6px; padding: 10px 12px; }
+  .exch-card .name { font-weight: 600; text-transform: uppercase; font-size: 12px; }
+  .exch-card .row { display: flex; justify-content: space-between; color: var(--muted); font-size: 11px; margin-top: 4px; }
 </style>
 </head>
 <body>
 <header>
-  <h1>MOMENTUM ENGINE</h1>
+  <h1>🟢 MOMENTUM ENGINE</h1>
   <span id="mode-badge" class="badge shadow">SHADOW</span>
+  <span class="stat">real orders <b id="real-orders">0</b></span>
   <span class="stat">uptime <b id="uptime">-</b></span>
   <span class="stat">universe <b id="universe">-</b></span>
-  <span class="stat">tracked <b id="tracked">-</b></span>
+  <span class="stat">common symbols <b id="common-symbols">-</b></span>
   <span class="stat">promoted <b id="promoted">-</b></span>
-  <span class="stat">twin pending <b id="twin-pending">-</b></span>
-  <span class="stat" id="cross-exchange-note"></span>
+  <span class="stat">twin/early pending <b id="pending">-</b></span>
 </header>
 <main>
   <div class="kpis" id="kpis"></div>
+
+  <div class="cols3" id="exchange-cards"></div>
+
   <div class="cols">
-    <div class="panel">
+    <div class="panel scroll-x">
       <h2>Top Momentum — UP</h2>
       <table id="up-table"><thead></thead><tbody></tbody></table>
     </div>
-    <div class="panel">
+    <div class="panel scroll-x">
       <h2>Top Momentum — DOWN (shadow only)</h2>
       <table id="down-table"><thead></thead><tbody></tbody></table>
     </div>
   </div>
-  <div class="panel">
+
+  <div class="panel scroll-x">
     <h2>Active Shadow Trades</h2>
     <table id="trades-table"><thead></thead><tbody></tbody></table>
   </div>
-  <div class="panel">
-    <h2>Early Movers</h2>
-    <table id="movers-table"><thead></thead><tbody></tbody></table>
-    <div class="note">Assets whose move is accelerating now, before they necessarily show up as top 24h gainers.</div>
+
+  <div class="cols">
+    <div class="panel scroll-x">
+      <h2><span class="dot up"></span>Early UP Movers</h2>
+      <table id="early-up-table"><thead></thead><tbody></tbody></table>
+    </div>
+    <div class="panel scroll-x">
+      <h2><span class="dot down"></span>Early DOWN Movers</h2>
+      <table id="early-down-table"><thead></thead><tbody></tbody></table>
+    </div>
+  </div>
+  <div class="note">Early movers are flagged on the *first* significant anomaly (T0), tracked forward independently of whether they became a qualified signal.</div>
+
+  <div class="cols">
+    <div class="panel scroll-x">
+      <h2>Leader / Lag (statistical, not causal)</h2>
+      <table id="leader-lag-table"><thead></thead><tbody></tbody></table>
+    </div>
+    <div class="panel scroll-x">
+      <h2>Strategy / Direction Performance (never pooled)</h2>
+      <table id="strategy-table"><thead></thead><tbody></tbody></table>
+    </div>
   </div>
 </main>
 
@@ -98,12 +127,27 @@ async function refreshStatus() {
   const s = await j('/api/status');
   document.getElementById('mode-badge').textContent = s.mode;
   document.getElementById('mode-badge').className = 'badge ' + (s.mode === 'SHADOW' ? 'shadow' : 'live');
+  document.getElementById('real-orders').textContent = s.real_orders;
   document.getElementById('uptime').textContent = fmt(s.uptime_s / 60, 1) + 'm';
-  document.getElementById('universe').textContent = s.universe_size;
-  document.getElementById('tracked').textContent = s.symbols_tracked;
+  document.getElementById('universe').textContent = s.universe_size + ' (' +
+    Object.entries(s.universe_size_by_exchange || {}).map(([k,v]) => `${k}:${v}`).join(' ') + ')';
+  document.getElementById('common-symbols').textContent = s.common_symbols;
   document.getElementById('promoted').textContent = s.symbols_promoted;
-  document.getElementById('twin-pending').textContent = s.digital_twin_pending;
-  document.getElementById('cross-exchange-note').textContent = 'cross-exchange: ' + s.cross_exchange_confirmation;
+  document.getElementById('pending').textContent = s.digital_twin_pending + ' / ' + s.early_mover_pending;
+}
+
+async function refreshExchanges() {
+  const e = await j('/api/exchanges');
+  document.getElementById('exchange-cards').innerHTML = (e.exchanges || []).map(x => `
+    <div class="exch-card">
+      <div class="name">${x.connected ? '🟢' : '🔴'} ${x.exchange}</div>
+      <div class="row"><span>universe</span><span>${x.universe_size}</span></div>
+      <div class="row"><span>tracked</span><span>${x.tracked_symbols}</span></div>
+      <div class="row"><span>connect latency</span><span>${fmt(x.connect_latency_ms, 0)} ms</span></div>
+      <div class="row"><span>data freshness</span><span>${fmt(x.data_freshness_s, 1)} s</span></div>
+      <div class="row"><span>reconnects</span><span>${x.reconnect_count}</span></div>
+    </div>
+  `).join('') || '<div class="empty">no exchanges configured</div>';
 }
 
 async function refreshKpis() {
@@ -128,18 +172,22 @@ async function refreshKpis() {
 function renderMomentumTable(tableId, rows, direction) {
   const table = document.getElementById(tableId);
   table.querySelector('thead').innerHTML = `<tr>
-    <th>Symbol</th><th>Price</th><th>Confidence</th><th>Class</th><th>Exhaustion</th><th>Entry Q</th><th>Entry Type</th>
+    <th>Symbol</th><th>Price</th><th>Confidence</th><th>Class</th><th>Exhaustion</th>
+    <th>Entry Q</th><th>Entry Type</th><th>Exchanges</th><th>Leader</th><th>Best Exec</th>
   </tr>`;
   if (!rows.length) {
-    table.querySelector('tbody').innerHTML = `<tr><td colspan="7" class="empty">NO QUALIFIED MOMENTUM</td></tr>`;
+    table.querySelector('tbody').innerHTML = `<tr><td colspan="10" class="empty">NO QUALIFIED MOMENTUM</td></tr>`;
     return;
   }
   table.querySelector('tbody').innerHTML = rows.map(c => {
     const d = c[direction];
+    const exList = Object.keys(c.exchanges || {}).join(', ');
+    const bestExec = direction === 'up' ? c.best_execution_up : c.best_execution_down;
     return `<tr>
       <td>${c.symbol}</td><td>${fmt(c.price, 6)}</td><td>${fmt(d.confidence, 1)}</td>
       <td>${tag(d.classification)}</td><td>${fmt(d.exhaustion_risk, 1)}</td>
       <td>${fmt(c.entry_quality, 1)}</td><td>${c.entry_type || '—'}</td>
+      <td>${exList || c.primary_exchange}</td><td>${c.leading_exchange || '—'}</td><td>${bestExec || '—'}</td>
     </tr>`;
   }).join('');
 }
@@ -150,24 +198,67 @@ async function refreshMovers() {
   renderMomentumTable('down-table', m.down, 'down');
 }
 
-async function refreshEarlyMovers() {
-  const m = await j('/api/early_movers');
-  const table = document.getElementById('movers-table');
+function renderEarlyMoverTable(tableId, rows) {
+  const table = document.getElementById(tableId);
   table.querySelector('thead').innerHTML = `<tr>
-    <th>Symbol</th><th>Price</th><th>Δ10s</th><th>Δ30s</th><th>Δ1m</th><th>Δ5m</th><th>Vol Accel</th>
+    <th>Symbol</th><th>Exchange</th><th>T0 Price</th><th>T0 Conf</th><th>Max Conf</th>
+    <th>Time to Peak</th><th>+30s</th><th>+1m</th><th>+5m</th><th>MFE</th><th>MAE</th>
   </tr>`;
-  const rows = m.early_movers || [];
   if (!rows.length) {
-    table.querySelector('tbody').innerHTML = `<tr><td colspan="7" class="empty">NO QUALIFIED MOMENTUM</td></tr>`;
+    table.querySelector('tbody').innerHTML = `<tr><td colspan="11" class="empty">no early movers yet</td></tr>`;
     return;
   }
-  table.querySelector('tbody').innerHTML = rows.map(c => `<tr>
-    <td>${c.symbol}</td><td>${fmt(c.price, 6)}</td>
-    <td class="${pnlClass(c.velocity_10s)}">${fmt(c.velocity_10s, 3)}%</td>
-    <td class="${pnlClass(c.velocity_30s)}">${fmt(c.velocity_30s, 3)}%</td>
-    <td class="${pnlClass(c.velocity_60s)}">${fmt(c.velocity_60s, 3)}%</td>
-    <td class="${pnlClass(c.velocity_300s)}">${fmt(c.velocity_300s, 3)}%</td>
-    <td>${fmt(c.volume_ratio, 2)}x</td>
+  table.querySelector('tbody').innerHTML = rows.map(e => {
+    const r = e.returns || {};
+    return `<tr>
+      <td>${e.symbol}</td><td>${e.exchange}</td><td>${fmt(e.t0_price, 6)}</td>
+      <td>${fmt(e.t0_confidence, 1)}</td><td>${fmt(e.max_confidence, 1)}</td>
+      <td>${fmt(e.time_to_peak_s, 0)}s</td>
+      <td class="${pnlClass(r['30'])}">${fmt(r['30'], 2)}%</td>
+      <td class="${pnlClass(r['60'])}">${fmt(r['60'], 2)}%</td>
+      <td class="${pnlClass(r['300'])}">${fmt(r['300'], 2)}%</td>
+      <td class="${pnlClass(e.mfe_pct)}">${fmt(e.mfe_pct, 2)}%</td>
+      <td class="${pnlClass(e.mae_pct)}">${fmt(e.mae_pct, 2)}%</td>
+    </tr>`;
+  }).join('');
+}
+
+async function refreshEarlyMovers() {
+  const m = await j('/api/early_movers');
+  renderEarlyMoverTable('early-up-table', m.up || []);
+  renderEarlyMoverTable('early-down-table', m.down || []);
+}
+
+async function refreshLeaderLag() {
+  const l = await j('/api/leader_lag');
+  const table = document.getElementById('leader-lag-table');
+  table.querySelector('thead').innerHTML = `<tr><th>Leading Exchange</th><th>Times Led</th><th>Avg Lead Time</th></tr>`;
+  const rows = l.stats || [];
+  if (!rows.length) {
+    table.querySelector('tbody').innerHTML = `<tr><td colspan="3" class="empty">not enough observations yet</td></tr>`;
+    return;
+  }
+  table.querySelector('tbody').innerHTML = rows.map(r => `<tr>
+    <td>${r.leading_exchange}</td><td>${r.lead_count}</td><td>${fmt(r.avg_lead_time_ms, 0)} ms</td>
+  </tr>`).join('');
+}
+
+async function refreshStrategyKpis() {
+  const s = await j('/api/kpis/by_strategy');
+  const table = document.getElementById('strategy-table');
+  table.querySelector('thead').innerHTML = `<tr><th>Tag</th><th>Trades</th><th>Win Rate %</th><th>Expectancy</th><th>Net PnL</th></tr>`;
+  const rows = [
+    ...(s.by_entry_type || []).map(r => ({...r, tag: 'entry_type:' + r.tag})),
+    ...(s.by_direction || []).map(r => ({...r, tag: 'direction:' + r.tag})),
+  ];
+  if (!rows.length) {
+    table.querySelector('tbody').innerHTML = `<tr><td colspan="5" class="empty">no closed trades yet</td></tr>`;
+    return;
+  }
+  table.querySelector('tbody').innerHTML = rows.map(r => `<tr>
+    <td>${r.tag}</td><td>${r.trades}</td><td>${fmt(r.win_rate_pct, 1)}</td>
+    <td class="${pnlClass(r.expectancy)}">${fmt(r.expectancy, 3)}</td>
+    <td class="${pnlClass(r.net_pnl)}">${fmt(r.net_pnl, 3)}</td>
   </tr>`).join('');
 }
 
@@ -175,14 +266,14 @@ async function refreshTrades() {
   const t = await j('/api/trades');
   const table = document.getElementById('trades-table');
   table.querySelector('thead').innerHTML = `<tr>
-    <th>ID</th><th>Symbol</th><th>Dir</th><th>Entry</th><th>Stop</th><th>MFE%</th><th>MAE%</th><th>Trailing</th><th>Type</th>
+    <th>ID</th><th>Symbol</th><th>Exchange</th><th>Dir</th><th>Entry</th><th>Stop</th><th>MFE%</th><th>MAE%</th><th>Trailing</th><th>Type</th>
   </tr>`;
   if (!t.trades.length) {
-    table.querySelector('tbody').innerHTML = `<tr><td colspan="9" class="empty">no active shadow trades</td></tr>`;
+    table.querySelector('tbody').innerHTML = `<tr><td colspan="10" class="empty">no active shadow trades</td></tr>`;
     return;
   }
   table.querySelector('tbody').innerHTML = t.trades.map(tr => `<tr onclick="openTrade(${tr.id})">
-    <td>${tr.id}</td><td>${tr.symbol}</td><td>${tr.direction}</td>
+    <td>${tr.id}</td><td>${tr.symbol}</td><td>${tr.exchange}</td><td>${tr.direction}</td>
     <td>${fmt(tr.entry_price, 6)}</td><td>${fmt(tr.stop_price, 6)}</td>
     <td class="${pnlClass(tr.mfe_pct)}">${fmt(tr.mfe_pct, 2)}</td>
     <td class="${pnlClass(tr.mae_pct)}">${fmt(tr.mae_pct, 2)}</td>
@@ -194,7 +285,7 @@ async function openTrade(id) {
   const t = await j('/api/trades/' + id);
   const sig = t.signal || {};
   document.getElementById('overlay-content').innerHTML = `
-    <h3>Trade #${t.id} — ${t.symbol} ${t.direction}</h3>
+    <h3>Trade #${t.id} — ${t.symbol} ${t.direction} @ ${t.exchange}</h3>
     <p><b>Why entered:</b> classification ${sig.classification || '—'}, confidence ${fmt(sig.momentum_confidence,1)},
        exhaustion ${fmt(sig.exhaustion_risk,1)}, entry type ${t.entry_type || '—'}</p>
     <p><b>Timeline:</b> DETECTED → BUILDING → CONFIRMED → ENTRY (${fmt(t.entry_price,6)}) →
@@ -204,7 +295,7 @@ async function openTrade(id) {
     <p><b>MFE:</b> ${fmt(t.mfe_pct,2)}% · <b>MAE:</b> ${fmt(t.mae_pct,2)}% ·
        <b>Fees:</b> ${fmt(t.fees_paid,4)} · <b>Slippage:</b> ${fmt(t.slippage_pct,3)}%</p>
     ${t.status === 'CLOSED' ? `<p><b>Exit:</b> ${fmt(t.exit_price,6)} (${t.exit_reason}) · <b>Net PnL:</b> ${fmt(t.net_pnl,4)} · <b>R:</b> ${fmt(t.r_multiple,2)}</p>` : ''}
-    <p><b>Engine scores at entry:</b></p>
+    <p><b>All 9 engine scores at entry (why UP/DOWN):</b></p>
     <pre>${JSON.stringify(sig.engine_scores, null, 2)}</pre>
   `;
   document.getElementById('overlay').style.display = 'flex';
@@ -213,7 +304,10 @@ function closeOverlay() { document.getElementById('overlay').style.display = 'no
 
 async function refreshAll() {
   try {
-    await Promise.all([refreshStatus(), refreshKpis(), refreshMovers(), refreshEarlyMovers(), refreshTrades()]);
+    await Promise.all([
+      refreshStatus(), refreshExchanges(), refreshKpis(), refreshMovers(),
+      refreshEarlyMovers(), refreshLeaderLag(), refreshStrategyKpis(), refreshTrades(),
+    ]);
   } catch (e) { console.error(e); }
 }
 refreshAll();

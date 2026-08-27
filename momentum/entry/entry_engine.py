@@ -60,7 +60,7 @@ def compute(
     rank_result: RankResult,
     engine_scores: dict[str, EngineScore],
     entry_cfg: dict,
-    shadow_cfg: dict,
+    taker_fee_bps: float,
     reward_risk_target_multiple: float,
 ) -> EntryQuality:
     price = state.price_now()
@@ -84,7 +84,7 @@ def compute(
     if entry_type == "BREAKOUT" and _is_retest(distance_from_trigger_pct):
         entry_type = "BREAKOUT_RETEST"
 
-    fees_pct = (shadow_cfg["taker_fee_bps"] / 100.0) * 2  # round trip, bps->pct
+    fees_pct = (taker_fee_bps / 100.0) * 2  # round trip, bps->pct
     net_reward_pct = target_distance_pct - fees_pct
     net_reward_risk = net_reward_pct / stop_distance_pct if stop_distance_pct > 0 else 0.0
 

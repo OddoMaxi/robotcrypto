@@ -85,3 +85,42 @@ CREATE TABLE IF NOT EXISTS engine_runs (
     symbols_promoted INTEGER NOT NULL,
     duration_ms REAL NOT NULL
 );
+
+-- missions 7/8: early up/down movers, tracked from first significant anomaly (T0)
+CREATE TABLE IF NOT EXISTS early_mover_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts TEXT NOT NULL,
+    symbol TEXT NOT NULL,
+    exchange TEXT NOT NULL,
+    direction TEXT NOT NULL CHECK (direction IN ('UP','DOWN')),
+    t0_price REAL NOT NULL,
+    t0_confidence REAL NOT NULL,
+    max_confidence REAL,
+    time_to_peak_s REAL,
+    mfe_pct REAL,
+    mae_pct REAL,
+    status TEXT NOT NULL DEFAULT 'TRACKING' CHECK (status IN ('TRACKING','DONE'))
+);
+CREATE INDEX IF NOT EXISTS idx_early_mover_symbol ON early_mover_events(symbol, ts);
+
+CREATE TABLE IF NOT EXISTS early_mover_returns (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    event_id INTEGER NOT NULL,
+    horizon_s INTEGER NOT NULL,
+    pct_change REAL NOT NULL,
+    ts REAL NOT NULL,
+    FOREIGN KEY (event_id) REFERENCES early_mover_events(id)
+);
+CREATE INDEX IF NOT EXISTS idx_early_mover_returns_event ON early_mover_returns(event_id);
+
+-- mission 4: lead/lag observations, persisted for statistical aggregation only -
+-- never asserted as a causal "X leads Y" from a single instance
+CREATE TABLE IF NOT EXISTS leader_lag_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts TEXT NOT NULL,
+    symbol TEXT NOT NULL,
+    leading_exchange TEXT NOT NULL,
+    following_exchange TEXT NOT NULL,
+    lead_time_ms REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_leader_lag_symbol ON leader_lag_events(symbol);

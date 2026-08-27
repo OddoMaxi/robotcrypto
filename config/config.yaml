@@ -8,13 +8,18 @@ mode:
 
 exchanges:
   - binance
+  - bybit
+  - okx
 
 universe:
   quote_asset: USDT
   min_quote_volume_24h: 2000000        # ignore illiquid pairs
   stage_b_promote_count: 40            # top-N candidates (by Stage A fast score) per direction promoted to full engine suite
   refresh_interval_s: 300               # re-fetch exchangeInfo / 24h volume ranking
-  ws_symbols_per_connection: 60         # binance combined-stream chunk size
+  ws_symbols_per_connection:
+    binance: 60
+    bybit: 40
+    okx: 40
 
 horizons_s: [5, 10, 15, 30, 60, 180, 300, 900]   # 5s .. 15m
 twin_horizons_s: [5, 10, 15, 30, 60, 120, 180, 300, 600]
@@ -27,19 +32,24 @@ stage_a:
 
 engines:
   weights:
-    velocity: 0.15
-    acceleration: 0.15
-    volume: 0.15
-    orderflow: 0.15
-    orderbook_imbalance: 0.10
-    breakout: 0.15
-    multi_timeframe: 0.10
+    velocity: 0.13
+    acceleration: 0.13
+    volume: 0.13
+    orderflow: 0.13
+    orderbook_imbalance: 0.09
+    breakout: 0.13
+    multi_timeframe: 0.09
     volatility_expansion: 0.05
+    cross_exchange: 0.12               # mission 6: master ranker v2 - initial weight, to be
+                                        # revisited from Shadow data (mission 11), never hardcoded as a promise
   exhaustion:
     weight_in_confidence: -1.0          # subtracted after weighted engine sum, then clamped
     high_risk_threshold: 75
   regime:
     breadth_lookback_s: 60
+  early_mover:
+    confidence_threshold: 35            # momentum confidence that first fires an EARLY_MOVER_EVENT (T0)
+    cooldown_s: 300                     # don't re-fire the same symbol+direction within this window
 
 ranker:
   classification_thresholds:
@@ -68,10 +78,14 @@ exits:
   partial_take_profit_fraction: 0.5
 
 shadow:
-  taker_fee_bps: 10                     # 0.10%
+  taker_fee_bps_by_exchange:            # mission 9/10: real, per-exchange taker fees, not one blanket number
+    binance: 10                          # 0.10%
+    bybit: 10                            # 0.10%
+    okx: 8                               # 0.08% (standard OKX spot taker tier)
   maker_fee_bps: 8
   simulated_latency_ms: [50, 250]       # uniform range
   book_snapshot_history_ms: 2000
+  stale_data_max_age_s: 30              # mission 14: an exchange's data older than this is treated as unavailable
 
 dashboard:
   host: "0.0.0.0"

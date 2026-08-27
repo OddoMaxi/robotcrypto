@@ -20,6 +20,7 @@ DECELERATION_DROP_POINTS = 5.0
 class OpenTrade:
     id: int
     symbol: str
+    exchange: str    # execution venue (mission 9: may differ from where the signal was scored)
     direction: str  # "UP" or "DOWN"
     entry_price: float
     stop_price: float

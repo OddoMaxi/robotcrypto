@@ -233,3 +233,105 @@ class Ledger:
             }
 
         return await asyncio.to_thread(_compute)
+
+    async def get_kpis_by_tag(self, tag_column: str) -> list[dict]:
+        """Mission 8 strategy separation: KPIs grouped by entry_type or direction,
+        never pooling PnL across groups. tag_column must be a known safe column
+        name (not user input) - callers pass a literal, never external data."""
+        assert tag_column in ("entry_type", "direction")
+
+        def _compute() -> list[dict]:
+            with self._lock:
+                rows = self._conn.execute(
+                    f"SELECT * FROM shadow_trades WHERE status='CLOSED' AND {tag_column} IS NOT NULL"
+                ).fetchall()
+            by_tag: dict[str, list[dict]] = {}
+            for r in rows:
+                d = dict(r)
+                by_tag.setdefault(d[tag_column], []).append(d)
+
+            out = []
+            for tag, trades in by_tag.items():
+                n = len(trades)
+                wins = [t for t in trades if (t["net_pnl"] or 0) > 0]
+                net_pnl = sum(t["net_pnl"] or 0 for t in trades)
+                out.append({
+                    "tag": tag, "trades": n,
+                    "win_rate_pct": (len(wins) / n * 100.0) if n else 0.0,
+                    "expectancy": (net_pnl / n) if n else 0.0,
+                    "net_pnl": net_pnl,
+                })
+            return out
+
+        return await asyncio.to_thread(_compute)
+
+    # -- early movers (missions 7/8) -----------------------------------------
+    async def insert_early_mover_event(self, *, symbol: str, exchange: str, direction: str,
+                                        t0_price: float, t0_confidence: float) -> int:
+        cur = await asyncio.to_thread(
+            self._exec,
+            """INSERT INTO early_mover_events (ts, symbol, exchange, direction, t0_price, t0_confidence,
+                                                max_confidence, time_to_peak_s, status)
+               VALUES (?, ?, ?, ?, ?, ?, ?, 0, 'TRACKING')""",
+            (_now_iso(), symbol, exchange, direction, t0_price, t0_confidence, t0_confidence),
+        )
+        return cur.lastrowid
+
+    async def insert_early_mover_return(self, *, event_id: int, horizon_s: int, pct_change: float, ts: float) -> None:
+        await asyncio.to_thread(
+            self._exec,
+            "INSERT INTO early_mover_returns (event_id, horizon_s, pct_change, ts) VALUES (?, ?, ?, ?)",
+            (event_id, horizon_s, pct_change, ts),
+        )
+
+    async def finalize_early_mover_event(self, event_id: int, *, max_confidence: float, time_to_peak_s: float,
+                                          mfe_pct: float, mae_pct: float) -> None:
+        await asyncio.to_thread(
+            self._exec,
+            """UPDATE early_mover_events SET status='DONE', max_confidence=?, time_to_peak_s=?,
+                                              mfe_pct=?, mae_pct=? WHERE id=?""",
+            (max_confidence, time_to_peak_s, mfe_pct, mae_pct, event_id),
+        )
+
+    async def get_recent_early_movers(self, direction: str | None = None, limit: int = 20) -> list[dict]:
+        if direction:
+            rows = await asyncio.to_thread(
+                self._query,
+                "SELECT * FROM early_mover_events WHERE direction=? ORDER BY ts DESC LIMIT ?",
+                (direction, limit),
+            )
+        else:
+            rows = await asyncio.to_thread(
+                self._query, "SELECT * FROM early_mover_events ORDER BY ts DESC LIMIT ?", (limit,)
+            )
+        events = [dict(r) for r in rows]
+        for e in events:
+            returns = await asyncio.to_thread(
+                self._query, "SELECT horizon_s, pct_change FROM early_mover_returns WHERE event_id=? ORDER BY horizon_s",
+                (e["id"],),
+            )
+            e["returns"] = {r["horizon_s"]: r["pct_change"] for r in returns}
+        return events
+
+    # -- leader/lag (mission 4) -----------------------------------------------
+    async def insert_leader_lag_event(self, *, symbol: str, leading_exchange: str, following_exchange: str,
+                                       lead_time_ms: float) -> None:
+        await asyncio.to_thread(
+            self._exec,
+            """INSERT INTO leader_lag_events (ts, symbol, leading_exchange, following_exchange, lead_time_ms)
+               VALUES (?, ?, ?, ?, ?)""",
+            (_now_iso(), symbol, leading_exchange, following_exchange, lead_time_ms),
+        )
+
+    async def get_leader_lag_stats(self) -> list[dict]:
+        """Statistical aggregation only (mission 4): how often, and by how much,
+        each exchange has led another, across all observations so far."""
+        def _compute() -> list[dict]:
+            with self._lock:
+                rows = self._conn.execute(
+                    """SELECT leading_exchange, COUNT(*) as lead_count, AVG(lead_time_ms) as avg_lead_time_ms
+                       FROM leader_lag_events GROUP BY leading_exchange ORDER BY lead_count DESC"""
+                ).fetchall()
+            return [dict(r) for r in rows]
+
+        return await asyncio.to_thread(_compute)

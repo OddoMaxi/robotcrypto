@@ -30,8 +30,11 @@ class FillResult:
 
 class ShadowBroker:
     def __init__(self, shadow_cfg: dict):
-        self.taker_fee_bps = shadow_cfg["taker_fee_bps"]
+        self.fee_by_exchange: dict[str, float] = shadow_cfg["taker_fee_bps_by_exchange"]
         self.latency_range_ms = shadow_cfg["simulated_latency_ms"]
+
+    def taker_fee_bps(self, exchange: str) -> float:
+        return self.fee_by_exchange.get(exchange, 10.0)
 
     def _simulated_latency_ms(self) -> float:
         lo, hi = self.latency_range_ms
@@ -55,7 +58,7 @@ class ShadowBroker:
             return (levels[0][0] if levels else 0.0, 0.0)
         return cost / filled, filled
 
-    def _fill(self, state: SymbolState, side: str, size: float) -> FillResult | None:
+    def _fill(self, state: SymbolState, side: str, size: float, exchange: str) -> FillResult | None:
         """side: 'buy' walks the ask side, 'sell' walks the bid side."""
         latency_ms = self._simulated_latency_ms()
         snap = state.book_state_delayed(latency_ms)
@@ -78,16 +81,16 @@ class ShadowBroker:
             return None
 
         slippage_pct = abs(avg_price - best) / best * 100.0
-        fee = avg_price * filled * (self.taker_fee_bps / 10_000)
+        fee = avg_price * filled * (self.taker_fee_bps(exchange) / 10_000)
         return FillResult(avg_price=avg_price, filled_size=filled, fee=fee, slippage_pct=slippage_pct, latency_ms=latency_ms)
 
-    def simulate_entry(self, state: SymbolState, direction: str, size: float) -> FillResult | None:
+    def simulate_entry(self, state: SymbolState, direction: str, size: float, exchange: str) -> FillResult | None:
         # UP -> long, buy at ask. DOWN -> shadow short, "sell" (short) at bid.
-        return self._fill(state, "buy" if direction == "UP" else "sell", size)
+        return self._fill(state, "buy" if direction == "UP" else "sell", size, exchange)
 
-    def simulate_exit(self, state: SymbolState, direction: str, size: float) -> FillResult | None:
+    def simulate_exit(self, state: SymbolState, direction: str, size: float, exchange: str) -> FillResult | None:
         # closing a long -> sell at bid. closing a shadow short -> buy-to-cover at ask.
-        return self._fill(state, "sell" if direction == "UP" else "buy", size)
+        return self._fill(state, "sell" if direction == "UP" else "buy", size, exchange)
 
     @staticmethod
     def apply_filters(sym_filter: SymbolFilter | None, size: float, price: float) -> float | None:

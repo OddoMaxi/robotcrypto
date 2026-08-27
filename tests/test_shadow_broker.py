@@ -4,7 +4,7 @@ from momentum.data.events import BookTicker, DepthSnapshot
 from momentum.data.state import SymbolState
 from momentum.shadow.broker import ShadowBroker
 
-SHADOW_CFG = {"taker_fee_bps": 10, "simulated_latency_ms": [10, 20]}
+SHADOW_CFG = {"taker_fee_bps_by_exchange": {"binance": 10}, "simulated_latency_ms": [10, 20]}
 
 
 def _state_with_book() -> SymbolState:
@@ -24,7 +24,7 @@ def test_entry_fill_walks_book_and_applies_fee():
     state = _state_with_book()
     broker = ShadowBroker(SHADOW_CFG)
 
-    fill = broker.simulate_entry(state, "UP", size=1.5)
+    fill = broker.simulate_entry(state, "UP", size=1.5, exchange="binance")
     assert fill is not None
     assert fill.filled_size == 1.5
     # walks 1.0 @ 100.1 + 0.5 @ 100.2
@@ -38,7 +38,7 @@ def test_exit_short_covers_against_asks():
     state = _state_with_book()
     broker = ShadowBroker(SHADOW_CFG)
 
-    fill = broker.simulate_exit(state, "DOWN", size=1.0)
+    fill = broker.simulate_exit(state, "DOWN", size=1.0, exchange="binance")
     assert fill is not None
     assert abs(fill.avg_price - 100.1) < 1e-9
 

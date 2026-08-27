@@ -16,6 +16,7 @@ import websockets
 
 from momentum.data.events import BookTicker, DepthSnapshot, Trade
 from momentum.exchanges.base import BookTickerHandler, DepthHandler, SymbolFilter, TradeHandler
+from momentum.exchanges.health import ExchangeHealth
 
 logger = logging.getLogger(__name__)
 
@@ -32,9 +33,11 @@ WS_BASE = "wss://data-stream.binance.vision/stream"
 class BinanceAdapter:
     name = "binance"
 
-    def __init__(self, quote_asset: str = "USDT", ws_symbols_per_connection: int = 60):
+    def __init__(self, quote_asset: str = "USDT", ws_symbols_per_connection: int = 60,
+                 health: ExchangeHealth | None = None):
         self.quote_asset = quote_asset
         self.ws_symbols_per_connection = ws_symbols_per_connection
+        self.health = health or ExchangeHealth(exchange=self.name)
 
     async def fetch_symbol_universe(self) -> list[SymbolFilter]:
         async with aiohttp.ClientSession() as session:
@@ -118,18 +121,25 @@ class BinanceAdapter:
             low = sym.lower()
             streams += [f"{low}@aggTrade", f"{low}@bookTicker", f"{low}@depth5@100ms"]
         url = f"{WS_BASE}?streams={'/'.join(streams)}"
+        self.health.symbols_subscribed = max(self.health.symbols_subscribed, len(symbols))
 
         backoff = 1.0
+        has_connected_before = False
         while True:
+            t0 = self.health.on_connecting()
             try:
                 async with websockets.connect(url, ping_interval=20, ping_timeout=20) as ws:
+                    self.health.on_connected(t0, is_reconnect=has_connected_before)
+                    has_connected_before = True
                     logger.info("binance ws connected: %d symbols", len(symbols))
                     backoff = 1.0
                     async for raw in ws:
+                        self.health.on_message()
                         await self._dispatch(raw, on_trade, on_book_ticker, on_depth)
             except asyncio.CancelledError:
                 raise
             except Exception:
+                self.health.on_disconnected()
                 logger.exception("binance ws connection dropped, reconnecting in %.1fs", backoff)
                 await asyncio.sleep(backoff)
                 backoff = min(backoff * 2, 30.0)
