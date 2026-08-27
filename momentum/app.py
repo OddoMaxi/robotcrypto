@@ -422,6 +422,26 @@ async def stage_ab_loop(cfg: Config, store: StateStore, runtime: AppRuntime,
         prev_fast_scores = fast_scores
         runtime.last_stage_a_scanned = len(canonical_symbols)
 
+        # Sub-threshold WATCHLIST tier: Tier-1-only visibility (price + fast
+        # score), structurally never promoted to Stage B/trading - these
+        # symbols never enter `promoted_symbols` above.
+        watchlist_snapshot = {}
+        for sym in runtime.watchlist_symbols:
+            states_by_exchange = _states_by_exchange(store, exchanges, sym, now, stale_max_age_s)
+            primary_ex, primary_state = _pick_primary(states_by_exchange)
+            if primary_state is None:
+                continue
+            price = primary_state.price_now()
+            if price is None:
+                continue
+            watchlist_snapshot[sym] = {
+                "symbol": sym, "primary_exchange": primary_ex, "price": price,
+                "fast_score": _combined_fast_score(store, exchanges, sym, now, stage_a_cfg),
+                "velocity_10s": primary_state.velocity_pct(now, 10),
+                "exchanges": list(states_by_exchange.keys()),
+            }
+        runtime.watchlist_snapshot = watchlist_snapshot
+
         elapsed = time.time() - t0
         duration_ms = elapsed * 1000
         cpu_pct, rss_mb = compute_budget.sample()
@@ -556,23 +576,26 @@ async def universe_refresh_loop(cfg: Config, runtime: AppRuntime):
             try:
                 symbols = await universe.refresh()
                 runtime.universe_size_by_exchange[exchange] = len(symbols)
-                for sym in symbols:
+                for sym in symbols + universe.watchlist_symbols:
                     f = universe.get_filter(sym)
                     if f:
                         await runtime.ledger.upsert_symbol(sym, exchange, f.base_asset, f.quote_asset,
                                                             f.tick_size, f.step_size, f.min_notional,
                                                             f.quote_volume_24h)
+                # the watchlist tier can refresh in place each cycle (visibility-only,
+                # no live WS subscription risk either way since it's already tracked or not)
+                runtime.watchlist_symbols_by_exchange[exchange] = universe.watchlist_symbols
                 # only (re)populate tracked symbols if this exchange had none yet - an
                 # exchange that's already streaming keeps its existing subscription set
                 # until a restart, per the documented V1 limitation (see stage_ab_loop docstring)
                 if symbols and not runtime.tracked_symbols_by_exchange.get(exchange):
                     all_symbols, stable_symbols = _split_stablecoins(symbols, cfg.universe["quote_asset"])
                     runtime.tracked_symbols_by_exchange[exchange] = list(
-                        dict.fromkeys(all_symbols + list(REGIME_ANCHOR_SYMBOLS))
+                        dict.fromkeys(all_symbols + universe.watchlist_symbols + list(REGIME_ANCHOR_SYMBOLS))
                     )
                     runtime.stablecoin_symbols_by_exchange[exchange] = stable_symbols
-                    logger.info("%s: universe recovered, %d symbols now tracked (%d stablecoin)",
-                                exchange, len(symbols), len(stable_symbols))
+                    logger.info("%s: universe recovered, %d symbols now tracked (%d stablecoin, %d watchlist)",
+                                exchange, len(symbols), len(stable_symbols), len(universe.watchlist_symbols))
             except Exception:
                 logger.exception("universe refresh failed for %s", exchange)
 
@@ -661,9 +684,13 @@ async def main():
 
     health = HealthRegistry()
     adapters = {ex: build_adapter(ex, cfg, health) for ex in cfg.exchanges}
-    universes = {ex: Universe(adapters[ex], cfg.universe["min_quote_volume_24h"]) for ex in cfg.exchanges}
+    universes = {
+        ex: Universe(adapters[ex], cfg.universe["min_quote_volume_24h"],
+                     cfg.universe.get("watchlist_min_quote_volume_24h"))
+        for ex in cfg.exchanges
+    }
 
-    async def _discover_one(ex: str, universe: Universe) -> tuple[str, list[str]]:
+    async def _discover_one(ex: str, universe: Universe) -> tuple[str, list[str], list[str]]:
         # mission 14: one exchange's data being unreachable at startup (geo-block,
         # transient outage, ...) must never take the other exchanges - or the whole
         # engine - down with it. It just starts with 0 symbols there; the periodic
@@ -673,27 +700,32 @@ async def main():
             symbols = await universe.refresh()
         except Exception:
             logger.exception("%s: initial universe discovery failed, starting with 0 symbols (will retry)", ex)
-            return ex, []
-        for sym in symbols:
+            return ex, [], []
+        for sym in symbols + universe.watchlist_symbols:
             f = universe.get_filter(sym)
             await ledger.upsert_symbol(sym, ex, f.base_asset, f.quote_asset, f.tick_size, f.step_size,
                                         f.min_notional, f.quote_volume_24h)
-        return ex, symbols
+        return ex, symbols, universe.watchlist_symbols
 
     discovery_results = await asyncio.gather(*(_discover_one(ex, u) for ex, u in universes.items()))
 
     tracked_by_exchange: dict[str, list[str]] = {}
     stablecoin_by_exchange: dict[str, list[str]] = {}
+    watchlist_by_exchange: dict[str, list[str]] = {}
     universe_size_by_exchange: dict[str, int] = {}
-    for ex, symbols in discovery_results:
+    for ex, symbols, watchlist_symbols in discovery_results:
         universe_size_by_exchange[ex] = len(symbols)
-        if symbols:
+        if symbols or watchlist_symbols:
             all_symbols, stable_symbols = _split_stablecoins(symbols, cfg.universe["quote_asset"])
-            tracked_by_exchange[ex] = list(dict.fromkeys(all_symbols + list(REGIME_ANCHOR_SYMBOLS)))
+            tracked_by_exchange[ex] = list(
+                dict.fromkeys(all_symbols + watchlist_symbols + list(REGIME_ANCHOR_SYMBOLS))
+            )
             stablecoin_by_exchange[ex] = stable_symbols
+            watchlist_by_exchange[ex] = watchlist_symbols
         else:
             tracked_by_exchange[ex] = []
             stablecoin_by_exchange[ex] = []
+            watchlist_by_exchange[ex] = []
 
     store = StateStore()
     digital_twin = DigitalTwin(cfg.twin_horizons_s, ledger)
@@ -703,6 +735,7 @@ async def main():
         start_time=time.time(), ledger=ledger, digital_twin=digital_twin, early_mover_tracker=early_mover_tracker,
         universe_by_exchange=universes, health=health,
         tracked_symbols_by_exchange=tracked_by_exchange, stablecoin_symbols_by_exchange=stablecoin_by_exchange,
+        watchlist_symbols_by_exchange=watchlist_by_exchange,
         universe_size_by_exchange=universe_size_by_exchange,
     )
 

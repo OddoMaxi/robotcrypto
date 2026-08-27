@@ -13,7 +13,12 @@ exchanges:
 
 universe:
   quote_asset: USDT
-  min_quote_volume_24h: 2000000        # ignore illiquid pairs
+  min_quote_volume_24h: 2000000        # ignore illiquid pairs - untouched, real trading threshold
+  # user-requested: a lower, visibility-only tier for real-but-thinner pairs
+  # (e.g. LUNC/RVN/ZIL/SAND currently sit below min_quote_volume_24h on all 3
+  # exchanges). Tracked and shown on the dashboard; structurally never promoted
+  # to Stage A/B or traded (see runtime.momentum_symbols / app.py watchlist path).
+  watchlist_min_quote_volume_24h: 300000
   stage_b_promote_count: 40            # top-N candidates (by Stage A fast score) per direction promoted to full engine suite
   refresh_interval_s: 300               # re-fetch exchangeInfo / 24h volume ranking
   ws_symbols_per_connection:

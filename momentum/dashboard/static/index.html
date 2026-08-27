@@ -62,6 +62,7 @@
   <span class="stat">uptime <b id="uptime">-</b></span>
   <span class="stat">universe <b id="universe">-</b></span>
   <span class="stat">common symbols <b id="common-symbols">-</b></span>
+  <span class="stat">watchlist (sub-threshold) <b id="watchlist-count">-</b></span>
   <span class="stat">promoted <b id="promoted">-</b></span>
   <span class="stat">twin/early pending <b id="pending">-</b></span>
   <span class="stat">cpu/ram <b id="compute-budget">-</b></span>
@@ -70,6 +71,12 @@
   <div class="kpis" id="kpis"></div>
 
   <div class="cols3" id="exchange-cards"></div>
+
+  <div class="panel scroll-x">
+    <h2>👁 Sub-Threshold Watchlist <span id="watchlist-total-note" class="note" style="display:inline;padding:0;"></span></h2>
+    <table id="watchlist-table"><thead></thead><tbody></tbody></table>
+    <div class="note">Real, listed pairs below the main liquidity threshold (min_quote_volume_24h) but above a lower visibility floor. Tracked and shown only - structurally never promoted to Stage B or traded. Top 30 by |fast score| shown.</div>
+  </div>
 
   <div class="panel scroll-x">
     <h2>🔥 Fast Movers Now</h2>
@@ -150,6 +157,7 @@ async function refreshStatus() {
   document.getElementById('universe').textContent = s.universe_size + ' (' +
     Object.entries(s.universe_size_by_exchange || {}).map(([k,v]) => `${k}:${v}`).join(' ') + ')';
   document.getElementById('common-symbols').textContent = s.common_symbols;
+  document.getElementById('watchlist-count').textContent = s.watchlist_symbols;
   document.getElementById('promoted').textContent = s.symbols_promoted;
   document.getElementById('pending').textContent = s.digital_twin_pending + ' / ' + s.early_mover_pending;
   const cb = s.compute_budget || {};
@@ -217,6 +225,26 @@ async function refreshMovers() {
   const m = await j('/api/movers');
   renderMomentumTable('up-table', m.up, 'up');
   renderMomentumTable('down-table', m.down, 'down');
+}
+
+async function refreshWatchlist() {
+  const w = await j('/api/watchlist');
+  document.getElementById('watchlist-total-note').textContent =
+    w.total_tracked ? `(${w.total_tracked} tracked total)` : '';
+  const table = document.getElementById('watchlist-table');
+  table.querySelector('thead').innerHTML = `<tr>
+    <th>Symbol</th><th>Exchange(s)</th><th>Price</th><th>Velocity 10s</th><th>Fast Score (raw)</th>
+  </tr>`;
+  const rows = w.watchlist || [];
+  if (!rows.length) {
+    table.querySelector('tbody').innerHTML = `<tr><td colspan="5" class="empty">no sub-threshold pairs currently tracked</td></tr>`;
+    return;
+  }
+  table.querySelector('tbody').innerHTML = rows.map(r => `<tr>
+    <td>${r.symbol}</td><td>${(r.exchanges || []).join(', ')}</td><td>${fmt(r.price, 6)}</td>
+    <td class="${pnlClass(r.velocity_10s)}">${fmt(r.velocity_10s, 3)}%</td>
+    <td>${fmt(r.fast_score, 1)}</td>
+  </tr>`).join('');
 }
 
 async function refreshFastMovers() {
@@ -399,7 +427,7 @@ function closeOverlay() { document.getElementById('overlay').style.display = 'no
 async function refreshAll() {
   try {
     await Promise.all([
-      refreshStatus(), refreshExchanges(), refreshKpis(), refreshFastMovers(), refreshStarting(), refreshMovers(),
+      refreshStatus(), refreshExchanges(), refreshKpis(), refreshWatchlist(), refreshFastMovers(), refreshStarting(), refreshMovers(),
       refreshEarlyMovers(), refreshLeaderLag(), refreshStrategyKpis(), refreshTrades(), refreshStablecoins(),
     ]);
   } catch (e) { console.error(e); }

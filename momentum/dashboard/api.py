@@ -31,6 +31,7 @@ def create_app(runtime) -> FastAPI:
             "symbols_tracked_by_exchange": {ex: len(s) for ex, s in runtime.tracked_symbols_by_exchange.items()},
             "momentum_symbols": len(runtime.momentum_symbols),
             "stablecoin_symbols": sum(len(s) for s in runtime.stablecoin_symbols_by_exchange.values()),
+            "watchlist_symbols": len(runtime.watchlist_symbols),
             "common_symbols": len(common),
             "symbols_promoted": len(runtime.promoted),
             "digital_twin_pending": runtime.digital_twin.pending_count,
@@ -87,6 +88,11 @@ def create_app(runtime) -> FastAPI:
             reverse=True,
         )[:10]
         return {"starting": ranked}
+
+    @app.get("/api/watchlist")
+    async def watchlist(limit: int = 30):
+        rows = sorted(runtime.watchlist_snapshot.values(), key=lambda c: abs(c.get("fast_score") or 0.0), reverse=True)
+        return {"watchlist": rows[:limit], "total_tracked": len(rows)}
 
     @app.get("/api/stablecoins")
     async def stablecoins():

@@ -19,25 +19,45 @@ TRADABLE_STATUSES = {"TRADING", "Trading", "live"}  # Binance, Bybit, OKX respec
 
 
 class Universe:
-    def __init__(self, adapter: ExchangeAdapter, min_quote_volume_24h: float):
+    def __init__(self, adapter: ExchangeAdapter, min_quote_volume_24h: float,
+                 watchlist_min_quote_volume_24h: float | None = None):
         self.adapter = adapter
         self.min_quote_volume_24h = min_quote_volume_24h
+        # Sub-threshold WATCHLIST tier (user-requested): symbols between this
+        # floor and min_quote_volume_24h are tracked and shown on the dashboard
+        # for visibility, but never enter Stage A/B promotion or trading - the
+        # real min_quote_volume_24h gate above is untouched.
+        self.watchlist_min_quote_volume_24h = watchlist_min_quote_volume_24h
         self.filters_by_symbol: dict[str, SymbolFilter] = {}
+        self.watchlist_symbols: list[str] = []
 
     async def refresh(self) -> list[str]:
         all_symbols = await self.adapter.fetch_symbol_universe()
-        liquid = [
+        tradable = [
             s for s in all_symbols
             if s.quote_volume_24h >= self.min_quote_volume_24h and s.status in TRADABLE_STATUSES
         ]
-        liquid.sort(key=lambda s: s.quote_volume_24h, reverse=True)
+        tradable.sort(key=lambda s: s.quote_volume_24h, reverse=True)
+        self.filters_by_symbol = {s.symbol: s for s in tradable}
 
-        self.filters_by_symbol = {s.symbol: s for s in liquid}
+        if self.watchlist_min_quote_volume_24h is not None:
+            watchlist = [
+                s for s in all_symbols
+                if self.watchlist_min_quote_volume_24h <= s.quote_volume_24h < self.min_quote_volume_24h
+                and s.status in TRADABLE_STATUSES
+            ]
+            watchlist.sort(key=lambda s: s.quote_volume_24h, reverse=True)
+            self.watchlist_symbols = [s.symbol for s in watchlist]
+            for s in watchlist:
+                self.filters_by_symbol.setdefault(s.symbol, s)
+        else:
+            self.watchlist_symbols = []
+
         logger.info(
-            "universe refreshed: %d/%d symbols pass min_quote_volume_24h=%.0f",
-            len(liquid), len(all_symbols), self.min_quote_volume_24h,
+            "universe refreshed: %d/%d symbols pass min_quote_volume_24h=%.0f (+%d watchlist-tier)",
+            len(tradable), len(all_symbols), self.min_quote_volume_24h, len(self.watchlist_symbols),
         )
-        return [s.symbol for s in liquid]
+        return [s.symbol for s in tradable]
 
     def get_filter(self, symbol: str) -> SymbolFilter | None:
         return self.filters_by_symbol.get(symbol)

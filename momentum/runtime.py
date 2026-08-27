@@ -27,15 +27,22 @@ class AppRuntime:
     # includes them, for WS subscription) but are excluded from momentum_symbols - the
     # Stage A/B loop never sees them, they only feed the separate stablecoin monitor.
     stablecoin_symbols_by_exchange: dict[str, list[str]] = field(default_factory=dict)
+    # user-requested sub-threshold tier: real, liquid-enough-to-list pairs that
+    # sit below min_quote_volume_24h but above watchlist_min_quote_volume_24h.
+    # Tracked for live data + dashboard visibility only - excluded from
+    # momentum_symbols exactly like stablecoins, so they can never reach Stage
+    # A/B promotion or trading.
+    watchlist_symbols_by_exchange: dict[str, list[str]] = field(default_factory=dict)
     universe_size_by_exchange: dict[str, int] = field(default_factory=dict)
     promoted: dict = field(default_factory=dict)   # canonical symbol -> dashboard candidate dict
     last_stage_a_scanned: int = 0
     last_compute_budget: dict = field(default_factory=dict)
     stablecoin_snapshot: dict = field(default_factory=dict)  # symbol -> latest StablecoinCheck-derived dict
+    watchlist_snapshot: dict = field(default_factory=dict)   # symbol -> {price, fast_score, ...}, Tier-1-only
 
     @property
     def tracked_symbols(self) -> list[str]:
-        """Union of every canonical symbol tracked (incl. stablecoins) on any exchange."""
+        """Union of every canonical symbol tracked (incl. stablecoins/watchlist) on any exchange."""
         seen: dict[str, None] = {}
         for symbols in self.tracked_symbols_by_exchange.values():
             for s in symbols:
@@ -46,8 +53,9 @@ class AppRuntime:
     def momentum_symbols_by_exchange(self) -> dict[str, list[str]]:
         out = {}
         for ex, symbols in self.tracked_symbols_by_exchange.items():
-            stables = set(self.stablecoin_symbols_by_exchange.get(ex, []))
-            out[ex] = [s for s in symbols if s not in stables]
+            excluded = set(self.stablecoin_symbols_by_exchange.get(ex, [])) | \
+                set(self.watchlist_symbols_by_exchange.get(ex, []))
+            out[ex] = [s for s in symbols if s not in excluded]
         return out
 
     @property
@@ -55,6 +63,15 @@ class AppRuntime:
         """Union of every non-stablecoin canonical symbol - what Stage A/B actually scans."""
         seen: dict[str, None] = {}
         for symbols in self.momentum_symbols_by_exchange.values():
+            for s in symbols:
+                seen[s] = None
+        return list(seen)
+
+    @property
+    def watchlist_symbols(self) -> list[str]:
+        """Union of every sub-threshold watchlist-tier symbol across exchanges."""
+        seen: dict[str, None] = {}
+        for symbols in self.watchlist_symbols_by_exchange.values():
             for s in symbols:
                 seen[s] = None
         return list(seen)

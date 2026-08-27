@@ -44,6 +44,34 @@ async def test_universe_excludes_illiquid_and_non_trading_pairs():
     assert "DELISTEDUSDT" not in symbols
 
 
+async def test_watchlist_tier_is_separate_from_tradable_and_never_overlaps():
+    filters = [
+        _filter("BTCUSDT", 50_000_000),   # above main threshold -> tradable
+        _filter("LUNCUSDT", 1_200_000),    # below main (2M), above watchlist floor (300k) -> watchlist only
+        _filter("RVNUSDT", 250_000),        # below both -> excluded entirely
+        _filter("DELISTEDUSDT", 500_000, status="BREAK"),  # would qualify for watchlist by volume, but not status
+    ]
+    universe = Universe(_FakeAdapter(filters), min_quote_volume_24h=2_000_000,
+                         watchlist_min_quote_volume_24h=300_000)
+    tradable = await universe.refresh()
+
+    assert tradable == ["BTCUSDT"]
+    assert universe.watchlist_symbols == ["LUNCUSDT"]
+    assert "RVNUSDT" not in tradable and "RVNUSDT" not in universe.watchlist_symbols
+    assert "DELISTEDUSDT" not in universe.watchlist_symbols
+    # a symbol never appears in both tiers at once
+    assert not (set(tradable) & set(universe.watchlist_symbols))
+    # get_filter still resolves watchlist-only symbols (needed for dashboard price/volume display)
+    assert universe.get_filter("LUNCUSDT") is not None
+
+
+async def test_watchlist_disabled_when_no_floor_configured():
+    filters = [_filter("BTCUSDT", 50_000_000), _filter("LUNCUSDT", 1_200_000)]
+    universe = Universe(_FakeAdapter(filters), min_quote_volume_24h=2_000_000)  # no watchlist floor
+    await universe.refresh()
+    assert universe.watchlist_symbols == []
+
+
 def _state_with_book(spread_bps: float, depth_qty: float, symbol="BTCUSDT") -> SymbolState:
     state = SymbolState(symbol, "binance")
     now = time.time()
