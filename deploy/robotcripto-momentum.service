@@ -1,0 +1,24 @@
+[Unit]
+Description=Momentum Trading Engine V1 (Shadow-only) - fully separate from the arbitrage bot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=robotcripto-momentum
+Group=robotcripto-momentum
+WorkingDirectory=/opt/robotcripto-momentum
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/opt/robotcripto-momentum/.venv/bin/python -m momentum.app
+Restart=always
+RestartSec=5
+
+# isolation from the rest of the system / the arbitrage bot's own service+user
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+ReadWritePaths=/opt/robotcripto-momentum/db
+
+[Install]
+WantedBy=multi-user.target

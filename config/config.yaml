@@ -1,0 +1,81 @@
+# Momentum Trading Engine V1 - configuration
+# SAFETY: these two flags must stay as shown. Nothing in the codebase can place a
+# real order regardless of these values (see momentum/safety) - they exist as the
+# explicit, visible switch the spec requires, not as the actual safety mechanism.
+mode:
+  shadow_mode: true
+  real_orders: 0
+
+exchanges:
+  - binance
+
+universe:
+  quote_asset: USDT
+  min_quote_volume_24h: 2000000        # ignore illiquid pairs
+  stage_b_promote_count: 40            # top-N candidates (by Stage A fast score) per direction promoted to full engine suite
+  refresh_interval_s: 300               # re-fetch exchangeInfo / 24h volume ranking
+  ws_symbols_per_connection: 60         # binance combined-stream chunk size
+
+horizons_s: [5, 10, 15, 30, 60, 180, 300, 900]   # 5s .. 15m
+twin_horizons_s: [5, 10, 15, 30, 60, 120, 180, 300, 600]
+
+stage_a:
+  cycle_interval_s: 2
+  velocity_horizon_s: 30
+  volume_horizon_s: 30
+  min_abs_fast_score: 15               # below this, symbol isn't even worth Stage B this cycle
+
+engines:
+  weights:
+    velocity: 0.15
+    acceleration: 0.15
+    volume: 0.15
+    orderflow: 0.15
+    orderbook_imbalance: 0.10
+    breakout: 0.15
+    multi_timeframe: 0.10
+    volatility_expansion: 0.05
+  exhaustion:
+    weight_in_confidence: -1.0          # subtracted after weighted engine sum, then clamped
+    high_risk_threshold: 75
+  regime:
+    breadth_lookback_s: 60
+
+ranker:
+  classification_thresholds:
+    ignore: 40
+    watch: 55
+    building: 70
+    confirmed: 82
+    strong: 90
+    high_conviction: 95
+  exhausted_override_threshold: 75      # exhaustion_risk >= this forces EXHAUSTED regardless of confidence
+
+entry:
+  max_distance_from_trigger_pct: 0.6    # don't enter if price already ran this far past the breakout/trigger level
+  min_entry_quality: 55
+
+risk:
+  paper_account_equity: 10000.0
+  risk_pct_scenarios: [0.0025, 0.005, 0.01]
+  default_risk_pct: 0.005
+  reward_risk_target_multiple: 2.0
+
+exits:
+  breakeven_trigger_r: 0.5              # move stop to breakeven after 0.5R favorable excursion
+  trailing_activation_r: 1.0
+  partial_take_profit_r: 1.5
+  partial_take_profit_fraction: 0.5
+
+shadow:
+  taker_fee_bps: 10                     # 0.10%
+  maker_fee_bps: 8
+  simulated_latency_ms: [50, 250]       # uniform range
+  book_snapshot_history_ms: 2000
+
+dashboard:
+  host: "0.0.0.0"
+  port: 8801
+
+logging:
+  level: INFO

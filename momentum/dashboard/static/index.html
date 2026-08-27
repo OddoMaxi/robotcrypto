@@ -1,0 +1,223 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Momentum Engine</title>
+<style>
+  :root {
+    --bg: #0b0e14; --panel: #131824; --border: #232b3a; --text: #e6e9ef; --muted: #8b93a7;
+    --up: #35c98f; --down: #ef5f6b; --warn: #e8b64c; --accent: #4f8cff;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text); font-family: -apple-system, Segoe UI, Roboto, sans-serif; font-size: 13px; }
+  header { display: flex; align-items: center; gap: 16px; padding: 12px 20px; border-bottom: 1px solid var(--border); flex-wrap: wrap; }
+  header h1 { font-size: 16px; margin: 0; margin-right: 8px; }
+  .badge { padding: 3px 8px; border-radius: 4px; font-weight: 600; font-size: 11px; }
+  .badge.shadow { background: #2a3a2a; color: var(--up); }
+  .badge.live { background: #3a2a2a; color: var(--down); }
+  .stat { color: var(--muted); }
+  .stat b { color: var(--text); }
+  main { padding: 16px 20px; display: grid; gap: 16px; }
+  .kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 10px; }
+  .kpi { background: var(--panel); border: 1px solid var(--border); border-radius: 6px; padding: 10px 12px; }
+  .kpi .label { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: .04em; }
+  .kpi .value { font-size: 18px; font-weight: 600; margin-top: 4px; }
+  .pos { color: var(--up); } .neg { color: var(--down); }
+  .cols { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+  @media (max-width: 900px) { .cols { grid-template-columns: 1fr; } }
+  .panel { background: var(--panel); border: 1px solid var(--border); border-radius: 6px; overflow: hidden; }
+  .panel h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); margin: 0; padding: 10px 12px; border-bottom: 1px solid var(--border); }
+  table { width: 100%; border-collapse: collapse; }
+  th, td { text-align: left; padding: 6px 10px; border-bottom: 1px solid var(--border); white-space: nowrap; }
+  th { color: var(--muted); font-weight: 500; font-size: 11px; }
+  tr:hover td { background: #171d2b; cursor: pointer; }
+  .tag { padding: 2px 6px; border-radius: 3px; font-size: 11px; font-weight: 600; }
+  .tag.IGNORE { background: #23283a; color: var(--muted); }
+  .tag.WATCH { background: #23324a; color: #7fb0ff; }
+  .tag.BUILDING { background: #2a3a4a; color: #6fc7e8; }
+  .tag.CONFIRMED { background: #1f3a2f; color: var(--up); }
+  .tag.STRONG { background: #1f3a2f; color: var(--up); }
+  .tag.HIGH_CONVICTION { background: #123322; color: #4be39a; font-weight: 700; }
+  .tag.EXHAUSTED { background: #3a1f24; color: var(--down); }
+  .empty { color: var(--muted); padding: 16px; text-align: center; }
+  #overlay { display: none; position: fixed; inset: 0; background: rgba(0,0,0,.6); align-items: center; justify-content: center; z-index: 10; }
+  #overlay .box { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; max-width: 640px; width: 90%; max-height: 80vh; overflow: auto; padding: 16px; }
+  #overlay pre { white-space: pre-wrap; word-break: break-word; font-size: 12px; color: var(--muted); }
+  .close-btn { float: right; cursor: pointer; color: var(--muted); }
+  .note { color: var(--muted); font-size: 11px; padding: 8px 12px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>MOMENTUM ENGINE</h1>
+  <span id="mode-badge" class="badge shadow">SHADOW</span>
+  <span class="stat">uptime <b id="uptime">-</b></span>
+  <span class="stat">universe <b id="universe">-</b></span>
+  <span class="stat">tracked <b id="tracked">-</b></span>
+  <span class="stat">promoted <b id="promoted">-</b></span>
+  <span class="stat">twin pending <b id="twin-pending">-</b></span>
+  <span class="stat" id="cross-exchange-note"></span>
+</header>
+<main>
+  <div class="kpis" id="kpis"></div>
+  <div class="cols">
+    <div class="panel">
+      <h2>Top Momentum — UP</h2>
+      <table id="up-table"><thead></thead><tbody></tbody></table>
+    </div>
+    <div class="panel">
+      <h2>Top Momentum — DOWN (shadow only)</h2>
+      <table id="down-table"><thead></thead><tbody></tbody></table>
+    </div>
+  </div>
+  <div class="panel">
+    <h2>Active Shadow Trades</h2>
+    <table id="trades-table"><thead></thead><tbody></tbody></table>
+  </div>
+  <div class="panel">
+    <h2>Early Movers</h2>
+    <table id="movers-table"><thead></thead><tbody></tbody></table>
+    <div class="note">Assets whose move is accelerating now, before they necessarily show up as top 24h gainers.</div>
+  </div>
+</main>
+
+<div id="overlay"><div class="box">
+  <span class="close-btn" onclick="closeOverlay()">close ✕</span>
+  <div id="overlay-content"></div>
+</div></div>
+
+<script>
+const fmt = (v, d=2) => (v === null || v === undefined || Number.isNaN(v)) ? '—' : Number(v).toFixed(d);
+const pnlClass = (v) => (v > 0 ? 'pos' : (v < 0 ? 'neg' : ''));
+
+async function j(url) { const r = await fetch(url); return r.json(); }
+
+function tag(cls) { return `<span class="tag ${cls}">${cls}</span>`; }
+
+async function refreshStatus() {
+  const s = await j('/api/status');
+  document.getElementById('mode-badge').textContent = s.mode;
+  document.getElementById('mode-badge').className = 'badge ' + (s.mode === 'SHADOW' ? 'shadow' : 'live');
+  document.getElementById('uptime').textContent = fmt(s.uptime_s / 60, 1) + 'm';
+  document.getElementById('universe').textContent = s.universe_size;
+  document.getElementById('tracked').textContent = s.symbols_tracked;
+  document.getElementById('promoted').textContent = s.symbols_promoted;
+  document.getElementById('twin-pending').textContent = s.digital_twin_pending;
+  document.getElementById('cross-exchange-note').textContent = 'cross-exchange: ' + s.cross_exchange_confirmation;
+}
+
+async function refreshKpis() {
+  const k = await j('/api/kpis');
+  const items = [
+    ['Total Signals', k.total_signals, 0],
+    ['Qualified', k.qualified_signals, 0],
+    ['Trades', k.trades, 0],
+    ['Win Rate %', k.win_rate_pct, 1],
+    ['Expectancy', k.expectancy, 3],
+    ['Profit Factor', k.profit_factor, 2],
+    ['Max Drawdown', k.max_drawdown, 3],
+    ['Total Fees', k.total_fees, 3],
+    ['Avg Slippage %', k.avg_slippage_pct, 3],
+    ['Net PnL', k.net_pnl, 3],
+  ];
+  document.getElementById('kpis').innerHTML = items.map(([label, v, d]) => `
+    <div class="kpi"><div class="label">${label}</div><div class="value ${label.includes('PnL') || label==='Expectancy' ? pnlClass(v) : ''}">${fmt(v, d)}</div></div>
+  `).join('');
+}
+
+function renderMomentumTable(tableId, rows, direction) {
+  const table = document.getElementById(tableId);
+  table.querySelector('thead').innerHTML = `<tr>
+    <th>Symbol</th><th>Price</th><th>Confidence</th><th>Class</th><th>Exhaustion</th><th>Entry Q</th><th>Entry Type</th>
+  </tr>`;
+  if (!rows.length) {
+    table.querySelector('tbody').innerHTML = `<tr><td colspan="7" class="empty">NO QUALIFIED MOMENTUM</td></tr>`;
+    return;
+  }
+  table.querySelector('tbody').innerHTML = rows.map(c => {
+    const d = c[direction];
+    return `<tr>
+      <td>${c.symbol}</td><td>${fmt(c.price, 6)}</td><td>${fmt(d.confidence, 1)}</td>
+      <td>${tag(d.classification)}</td><td>${fmt(d.exhaustion_risk, 1)}</td>
+      <td>${fmt(c.entry_quality, 1)}</td><td>${c.entry_type || '—'}</td>
+    </tr>`;
+  }).join('');
+}
+
+async function refreshMovers() {
+  const m = await j('/api/movers');
+  renderMomentumTable('up-table', m.up, 'up');
+  renderMomentumTable('down-table', m.down, 'down');
+}
+
+async function refreshEarlyMovers() {
+  const m = await j('/api/early_movers');
+  const table = document.getElementById('movers-table');
+  table.querySelector('thead').innerHTML = `<tr>
+    <th>Symbol</th><th>Price</th><th>Δ10s</th><th>Δ30s</th><th>Δ1m</th><th>Δ5m</th><th>Vol Accel</th>
+  </tr>`;
+  const rows = m.early_movers || [];
+  if (!rows.length) {
+    table.querySelector('tbody').innerHTML = `<tr><td colspan="7" class="empty">NO QUALIFIED MOMENTUM</td></tr>`;
+    return;
+  }
+  table.querySelector('tbody').innerHTML = rows.map(c => `<tr>
+    <td>${c.symbol}</td><td>${fmt(c.price, 6)}</td>
+    <td class="${pnlClass(c.velocity_10s)}">${fmt(c.velocity_10s, 3)}%</td>
+    <td class="${pnlClass(c.velocity_30s)}">${fmt(c.velocity_30s, 3)}%</td>
+    <td class="${pnlClass(c.velocity_60s)}">${fmt(c.velocity_60s, 3)}%</td>
+    <td class="${pnlClass(c.velocity_300s)}">${fmt(c.velocity_300s, 3)}%</td>
+    <td>${fmt(c.volume_ratio, 2)}x</td>
+  </tr>`).join('');
+}
+
+async function refreshTrades() {
+  const t = await j('/api/trades');
+  const table = document.getElementById('trades-table');
+  table.querySelector('thead').innerHTML = `<tr>
+    <th>ID</th><th>Symbol</th><th>Dir</th><th>Entry</th><th>Stop</th><th>MFE%</th><th>MAE%</th><th>Trailing</th><th>Type</th>
+  </tr>`;
+  if (!t.trades.length) {
+    table.querySelector('tbody').innerHTML = `<tr><td colspan="9" class="empty">no active shadow trades</td></tr>`;
+    return;
+  }
+  table.querySelector('tbody').innerHTML = t.trades.map(tr => `<tr onclick="openTrade(${tr.id})">
+    <td>${tr.id}</td><td>${tr.symbol}</td><td>${tr.direction}</td>
+    <td>${fmt(tr.entry_price, 6)}</td><td>${fmt(tr.stop_price, 6)}</td>
+    <td class="${pnlClass(tr.mfe_pct)}">${fmt(tr.mfe_pct, 2)}</td>
+    <td class="${pnlClass(tr.mae_pct)}">${fmt(tr.mae_pct, 2)}</td>
+    <td>${tr.trailing_state}</td><td>${tr.entry_type || '—'}</td>
+  </tr>`).join('');
+}
+
+async function openTrade(id) {
+  const t = await j('/api/trades/' + id);
+  const sig = t.signal || {};
+  document.getElementById('overlay-content').innerHTML = `
+    <h3>Trade #${t.id} — ${t.symbol} ${t.direction}</h3>
+    <p><b>Why entered:</b> classification ${sig.classification || '—'}, confidence ${fmt(sig.momentum_confidence,1)},
+       exhaustion ${fmt(sig.exhaustion_risk,1)}, entry type ${t.entry_type || '—'}</p>
+    <p><b>Timeline:</b> DETECTED → BUILDING → CONFIRMED → ENTRY (${fmt(t.entry_price,6)}) →
+       PROTECTED/TRAILING (${t.trailing_state}) ${t.status === 'CLOSED' ? '→ EXIT (' + t.exit_reason + ')' : ''}</p>
+    <p><b>Stop:</b> ${fmt(t.stop_price,6)} · <b>Invalidation:</b> ${fmt(t.invalidation_price,6)} ·
+       <b>Size:</b> ${fmt(t.size,6)} · <b>Risk:</b> ${fmt(t.risk_pct*100,2)}% (${fmt(t.risk_amount,2)})</p>
+    <p><b>MFE:</b> ${fmt(t.mfe_pct,2)}% · <b>MAE:</b> ${fmt(t.mae_pct,2)}% ·
+       <b>Fees:</b> ${fmt(t.fees_paid,4)} · <b>Slippage:</b> ${fmt(t.slippage_pct,3)}%</p>
+    ${t.status === 'CLOSED' ? `<p><b>Exit:</b> ${fmt(t.exit_price,6)} (${t.exit_reason}) · <b>Net PnL:</b> ${fmt(t.net_pnl,4)} · <b>R:</b> ${fmt(t.r_multiple,2)}</p>` : ''}
+    <p><b>Engine scores at entry:</b></p>
+    <pre>${JSON.stringify(sig.engine_scores, null, 2)}</pre>
+  `;
+  document.getElementById('overlay').style.display = 'flex';
+}
+function closeOverlay() { document.getElementById('overlay').style.display = 'none'; }
+
+async function refreshAll() {
+  try {
+    await Promise.all([refreshStatus(), refreshKpis(), refreshMovers(), refreshEarlyMovers(), refreshTrades()]);
+  } catch (e) { console.error(e); }
+}
+refreshAll();
+setInterval(refreshAll, 3000);
+</script>
+</body>
+</html>

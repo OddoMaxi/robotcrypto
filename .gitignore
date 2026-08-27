@@ -1,0 +1,7 @@
+.venv/
+__pycache__/
+*.pyc
+*.egg-info/
+db/momentum.db
+db/momentum.db-*
+*.log
