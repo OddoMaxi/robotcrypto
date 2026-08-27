@@ -76,6 +76,7 @@ class OkxAdapter:
                     min_notional=min_sz * last_price,  # OKX gives min size in base ccy, not quote
                     quote_volume_24h=quote_volume,
                     status=s.get("state", ""),
+                    last_price=last_price,
                 )
             )
         return results

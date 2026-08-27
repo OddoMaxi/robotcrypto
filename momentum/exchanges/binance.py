@@ -47,6 +47,7 @@ class BinanceAdapter:
             )
 
         volume_by_symbol = {t["symbol"]: float(t["quoteVolume"]) for t in tickers_24h}
+        last_price_by_symbol = {t["symbol"]: float(t["lastPrice"]) for t in tickers_24h}
 
         results: list[SymbolFilter] = []
         for s in exchange_info["symbols"]:
@@ -78,6 +79,7 @@ class BinanceAdapter:
                     min_notional=min_notional,
                     quote_volume_24h=volume_by_symbol.get(s["symbol"], 0.0),
                     status=s["status"],
+                    last_price=last_price_by_symbol.get(s["symbol"], 0.0),
                 )
             )
         return results

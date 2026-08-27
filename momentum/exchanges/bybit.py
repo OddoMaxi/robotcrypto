@@ -59,6 +59,10 @@ class BybitAdapter:
                 quote_volume = float(t.get("turnover24h", 0.0))
             except (TypeError, ValueError):
                 quote_volume = 0.0
+            try:
+                last_price = float(t.get("lastPrice", 0.0) or 0.0)
+            except (TypeError, ValueError):
+                last_price = 0.0
 
             results.append(
                 SymbolFilter(
@@ -70,6 +74,7 @@ class BybitAdapter:
                     min_notional=float(lot.get("minOrderAmt", 0) or 0),
                     quote_volume_24h=quote_volume,
                     status=s.get("status", ""),
+                    last_price=last_price,
                 )
             )
         return results

@@ -26,6 +26,9 @@ class SymbolFilter:
     min_notional: float
     quote_volume_24h: float
     status: str
+    last_price: float = 0.0  # from the same REST 24h-ticker call - lets the watchlist
+                              # tier (see universe.py) show a price without a live WS
+                              # subscription, since it never trades and doesn't need one
 
 
 TradeHandler = Callable[[Trade], Awaitable[None]]

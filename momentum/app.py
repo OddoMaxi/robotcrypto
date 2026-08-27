@@ -55,13 +55,6 @@ EXCHANGE_PRIORITY = ("binance", "bybit", "okx")  # deterministic pick when multi
 RADAR_HORIZONS_S = (1, 3, 5, 10, 15, 30, 60, 180, 300)
 RADAR_HORIZON_WEIGHTS = (1.5, 1.4, 1.3, 1.2, 1.1, 1.0, 0.8, 0.6, 0.5)
 
-# The watchlist tier can be a much larger population than the momentum universe
-# (hundreds of long-tail pairs) and is monitoring-only - never traded - so it's
-# scanned far less often and with a single cheap horizon rather than the full
-# weighted radar every 2s.
-WATCHLIST_SCAN_EVERY_N_CYCLES = 10
-WATCHLIST_VELOCITY_HORIZON_S = 10
-
 WEIGHTED_ENGINES = {
     "velocity": velocity, "acceleration": acceleration, "volume": volume_engine,
     "orderflow": orderflow, "orderbook_imbalance": orderbook_imbalance, "breakout": breakout,
@@ -269,7 +262,6 @@ async def stage_ab_loop(cfg: Config, store: StateStore, runtime: AppRuntime,
     last_signal_log: dict[tuple[str, str], tuple[float, str]] = {}
     lead_lag_tracker = LeadLagTracker()
     degraded_mode = False  # set from the *previous* cycle's duration - see bottom of loop
-    cycle_count = 0
 
     while True:
         t0 = time.time()
@@ -430,31 +422,11 @@ async def stage_ab_loop(cfg: Config, store: StateStore, runtime: AppRuntime,
         prev_fast_scores = fast_scores
         runtime.last_stage_a_scanned = len(canonical_symbols)
 
-        # Sub-threshold WATCHLIST tier: Tier-1-only visibility (price + fast
-        # score), structurally never promoted to Stage B/trading - these
-        # symbols never enter `promoted_symbols` above. This population can be
-        # much larger than the momentum universe (hundreds of long-tail pairs),
-        # so it's scanned far less often and with a single cheap horizon - it's
-        # a monitoring panel, not a trading path, so 20s-stale numbers are fine
-        # and keeping it on the 2s momentum cadence was needlessly expensive.
-        cycle_count += 1
-        if cycle_count % WATCHLIST_SCAN_EVERY_N_CYCLES == 0:
-            watchlist_snapshot = {}
-            for sym in runtime.watchlist_symbols:
-                states_by_exchange = _states_by_exchange(store, exchanges, sym, now, stale_max_age_s)
-                primary_ex, primary_state = _pick_primary(states_by_exchange)
-                if primary_state is None:
-                    continue
-                price = primary_state.price_now()
-                if price is None:
-                    continue
-                watchlist_snapshot[sym] = {
-                    "symbol": sym, "primary_exchange": primary_ex, "price": price,
-                    "fast_score": primary_state.velocity_pct(now, WATCHLIST_VELOCITY_HORIZON_S),
-                    "velocity_10s": primary_state.velocity_pct(now, 10),
-                    "exchanges": list(states_by_exchange.keys()),
-                }
-            runtime.watchlist_snapshot = watchlist_snapshot
+        # Sub-threshold WATCHLIST tier is populated separately from REST
+        # 24h-ticker data (see _build_watchlist_snapshot / universe_refresh_loop)
+        # rather than here - these symbols are structurally never promoted to
+        # Stage B/trading and never get a live WS subscription at all, so there
+        # is no SymbolState for them to read in this loop.
 
         elapsed = time.time() - t0
         duration_ms = elapsed * 1000
@@ -583,6 +555,31 @@ def _split_stablecoins(symbols: list[str], quote_asset: str) -> tuple[list[str],
     return symbols, stable
 
 
+def _build_watchlist_snapshot(universe_by_exchange: dict[str, Universe]) -> dict[str, dict]:
+    """Watchlist tier is REST-only: built from each exchange's already-fetched
+    24h-ticker filters (last_price/quote_volume_24h), never from SymbolState/WS
+    data - these symbols are deliberately never given a live WS subscription
+    (see main()/universe_refresh_loop's tracked_by_exchange construction),
+    since a monitoring-only panel doesn't need it and it was the actual cost
+    of the CPU regression this replaced."""
+    snapshot: dict[str, dict] = {}
+    for exchange in EXCHANGE_PRIORITY:
+        universe = universe_by_exchange.get(exchange)
+        if universe is None:
+            continue
+        for sym in universe.watchlist_symbols:
+            if sym in snapshot:
+                continue
+            f = universe.get_filter(sym)
+            if f is None or f.last_price <= 0:
+                continue
+            snapshot[sym] = {
+                "symbol": sym, "primary_exchange": exchange, "price": f.last_price,
+                "quote_volume_24h": f.quote_volume_24h,
+            }
+    return snapshot
+
+
 async def universe_refresh_loop(cfg: Config, runtime: AppRuntime):
     while True:
         await asyncio.sleep(cfg.universe["refresh_interval_s"])
@@ -596,22 +593,22 @@ async def universe_refresh_loop(cfg: Config, runtime: AppRuntime):
                         await runtime.ledger.upsert_symbol(sym, exchange, f.base_asset, f.quote_asset,
                                                             f.tick_size, f.step_size, f.min_notional,
                                                             f.quote_volume_24h)
-                # the watchlist tier can refresh in place each cycle (visibility-only,
-                # no live WS subscription risk either way since it's already tracked or not)
                 runtime.watchlist_symbols_by_exchange[exchange] = universe.watchlist_symbols
                 # only (re)populate tracked symbols if this exchange had none yet - an
                 # exchange that's already streaming keeps its existing subscription set
-                # until a restart, per the documented V1 limitation (see stage_ab_loop docstring)
+                # until a restart, per the documented V1 limitation (see stage_ab_loop docstring).
+                # watchlist symbols are deliberately excluded - see tracked_by_exchange note in main().
                 if symbols and not runtime.tracked_symbols_by_exchange.get(exchange):
                     all_symbols, stable_symbols = _split_stablecoins(symbols, cfg.universe["quote_asset"])
                     runtime.tracked_symbols_by_exchange[exchange] = list(
-                        dict.fromkeys(all_symbols + universe.watchlist_symbols + list(REGIME_ANCHOR_SYMBOLS))
+                        dict.fromkeys(all_symbols + list(REGIME_ANCHOR_SYMBOLS))
                     )
                     runtime.stablecoin_symbols_by_exchange[exchange] = stable_symbols
                     logger.info("%s: universe recovered, %d symbols now tracked (%d stablecoin, %d watchlist)",
                                 exchange, len(symbols), len(stable_symbols), len(universe.watchlist_symbols))
             except Exception:
                 logger.exception("universe refresh failed for %s", exchange)
+        runtime.watchlist_snapshot = _build_watchlist_snapshot(runtime.universe_by_exchange)
 
 
 async def _stream_exchange_supervisor(exchange: str, adapter: ExchangeAdapter, runtime: AppRuntime,
@@ -731,8 +728,12 @@ async def main():
         universe_size_by_exchange[ex] = len(symbols)
         if symbols or watchlist_symbols:
             all_symbols, stable_symbols = _split_stablecoins(symbols, cfg.universe["quote_asset"])
+            # watchlist symbols are deliberately excluded from the WS-subscription
+            # list here - they're monitoring-only (never trade) and REST 24h-ticker
+            # data (see universe.get_filter().last_price) is all the dashboard needs,
+            # so they never pay the live WS ingestion cost (see build_watchlist_snapshot)
             tracked_by_exchange[ex] = list(
-                dict.fromkeys(all_symbols + watchlist_symbols + list(REGIME_ANCHOR_SYMBOLS))
+                dict.fromkeys(all_symbols + list(REGIME_ANCHOR_SYMBOLS))
             )
             stablecoin_by_exchange[ex] = stable_symbols
             watchlist_by_exchange[ex] = watchlist_symbols
@@ -752,6 +753,7 @@ async def main():
         watchlist_symbols_by_exchange=watchlist_by_exchange,
         universe_size_by_exchange=universe_size_by_exchange,
     )
+    runtime.watchlist_snapshot = _build_watchlist_snapshot(universes)
 
     broker = ShadowBroker(cfg.shadow_cfg)
     open_trades: dict[int, RuntimeTradeState] = {}

@@ -91,7 +91,9 @@ def create_app(runtime) -> FastAPI:
 
     @app.get("/api/watchlist")
     async def watchlist(limit: int = 30):
-        rows = sorted(runtime.watchlist_snapshot.values(), key=lambda c: abs(c.get("fast_score") or 0.0), reverse=True)
+        # REST-only tier (see app.py _build_watchlist_snapshot) - no live fast_score,
+        # so rank by 24h liquidity instead, most-liquid-first.
+        rows = sorted(runtime.watchlist_snapshot.values(), key=lambda c: c.get("quote_volume_24h") or 0.0, reverse=True)
         return {"watchlist": rows[:limit], "total_tracked": len(rows)}
 
     @app.get("/api/stablecoins")

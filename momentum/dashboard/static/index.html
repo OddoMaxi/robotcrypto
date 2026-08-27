@@ -233,17 +233,18 @@ async function refreshWatchlist() {
     w.total_tracked ? `(${w.total_tracked} tracked total)` : '';
   const table = document.getElementById('watchlist-table');
   table.querySelector('thead').innerHTML = `<tr>
-    <th>Symbol</th><th>Exchange(s)</th><th>Price</th><th>Velocity 10s</th><th>Fast Score (raw)</th>
+    <th>Symbol</th><th>Exchange</th><th>Price</th><th>24h Volume (USDT)</th>
   </tr>`;
   const rows = w.watchlist || [];
   if (!rows.length) {
-    table.querySelector('tbody').innerHTML = `<tr><td colspan="5" class="empty">no sub-threshold pairs currently tracked</td></tr>`;
+    table.querySelector('tbody').innerHTML = `<tr><td colspan="4" class="empty">no sub-threshold pairs currently tracked</td></tr>`;
     return;
   }
+  // REST-only tier (5-min refresh cadence, see app.py _build_watchlist_snapshot) -
+  // no live velocity/fast_score, since these symbols never get a WS subscription.
   table.querySelector('tbody').innerHTML = rows.map(r => `<tr>
-    <td>${r.symbol}</td><td>${(r.exchanges || []).join(', ')}</td><td>${fmt(r.price, 6)}</td>
-    <td class="${pnlClass(r.velocity_10s)}">${fmt(r.velocity_10s, 3)}%</td>
-    <td>${fmt(r.fast_score, 1)}</td>
+    <td>${r.symbol}</td><td>${r.primary_exchange || ''}</td><td>${fmt(r.price, 6)}</td>
+    <td>${fmt(r.quote_volume_24h, 0)}</td>
   </tr>`).join('');
 }
 

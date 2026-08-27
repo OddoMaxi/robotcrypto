@@ -29,16 +29,19 @@ class AppRuntime:
     stablecoin_symbols_by_exchange: dict[str, list[str]] = field(default_factory=dict)
     # user-requested sub-threshold tier: real, liquid-enough-to-list pairs that
     # sit below min_quote_volume_24h but above watchlist_min_quote_volume_24h.
-    # Tracked for live data + dashboard visibility only - excluded from
-    # momentum_symbols exactly like stablecoins, so they can never reach Stage
-    # A/B promotion or trading.
+    # Dashboard visibility only, sourced from periodic REST 24h-ticker data
+    # (see app.py _build_watchlist_snapshot) - deliberately NOT included in
+    # tracked_symbols_by_exchange/WS subscriptions (a prior version did include
+    # them there, which nearly tripled live WS message volume and was the root
+    # cause of a CPU regression). Excluded from momentum_symbols exactly like
+    # stablecoins either way, so they can never reach Stage A/B promotion or trading.
     watchlist_symbols_by_exchange: dict[str, list[str]] = field(default_factory=dict)
     universe_size_by_exchange: dict[str, int] = field(default_factory=dict)
     promoted: dict = field(default_factory=dict)   # canonical symbol -> dashboard candidate dict
     last_stage_a_scanned: int = 0
     last_compute_budget: dict = field(default_factory=dict)
     stablecoin_snapshot: dict = field(default_factory=dict)  # symbol -> latest StablecoinCheck-derived dict
-    watchlist_snapshot: dict = field(default_factory=dict)   # symbol -> {price, fast_score, ...}, Tier-1-only
+    watchlist_snapshot: dict = field(default_factory=dict)   # symbol -> {price, quote_volume_24h, ...}, REST-only, no WS subscription
 
     @property
     def tracked_symbols(self) -> list[str]:
