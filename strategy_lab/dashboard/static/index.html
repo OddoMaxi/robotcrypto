@@ -1,0 +1,185 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Momentum Strategy Lab V2</title>
+<style>
+  body { background:#0b0f14; color:#d7e0ea; font-family: -apple-system, "Segoe UI", Helvetica, Arial, sans-serif; margin:0; padding:20px; }
+  h1 { font-size:20px; margin:0 0 6px; }
+  h2 { font-size:15px; margin:24px 0 8px; color:#8fb3d9; border-bottom:1px solid #22303f; padding-bottom:4px; }
+  .note { color:#6b7c8f; font-size:12px; }
+  .stat { display:inline-block; margin-right:18px; font-size:13px; color:#9fb2c4; }
+  .stat b { color:#e8eef4; }
+  table { width:100%; border-collapse:collapse; font-size:12px; }
+  th, td { text-align:left; padding:4px 8px; border-bottom:1px solid #1b2530; white-space:nowrap; }
+  th { color:#7c93a8; font-weight:600; }
+  .pos { color:#3ecf8e; } .neg { color:#f2545b; } .empty { color:#546575; font-style:italic; }
+  .pill { display:inline-block; padding:1px 7px; border-radius:10px; font-size:11px; }
+  .pill.active { background:#123a2a; color:#3ecf8e; }
+  .pill.insufficient { background:#2a2410; color:#d9b23e; }
+  .card { background:#0f151c; border:1px solid #1b2530; border-radius:8px; padding:14px; margin-bottom:14px; }
+</style>
+</head>
+<body>
+  <h1>Momentum Strategy Lab V2 <span class="note">- Shadow only, REAL_ORDERS=0, fully separate from the baseline Momentum Bot</span></h1>
+  <div id="header-stats" class="card"></div>
+
+  <h2>Live Market (hottest symbol)</h2>
+  <div id="live-market" class="card"></div>
+
+  <h2>Strategy Leaderboard</h2>
+  <table id="strategy-table"><thead></thead><tbody></tbody></table>
+
+  <h2>Strategy Agreement Cohorts</h2>
+  <table id="agreement-table"><thead></thead><tbody></tbody></table>
+
+  <h2>Confirmation Window Lab</h2>
+  <table id="confirmation-table"><thead></thead><tbody></tbody></table>
+
+  <h2>Exit Policy Lab</h2>
+  <table id="exit-policy-table"><thead></thead><tbody></tbody></table>
+
+  <h2>Recent Shadow Trades</h2>
+  <table id="trades-table"><thead></thead><tbody></tbody></table>
+
+  <h2>Missed Moves</h2>
+  <table id="missed-table"><thead></thead><tbody></tbody></table>
+
+  <h2>False Positives</h2>
+  <table id="fp-table"><thead></thead><tbody></tbody></table>
+
+<script>
+async function j(url) { const r = await fetch(url); return r.json(); }
+function fmt(v, d) { return (v === null || v === undefined) ? '-' : Number(v).toFixed(d); }
+function pnlClass(v) { return (v === null || v === undefined) ? '' : (v >= 0 ? 'pos' : 'neg'); }
+function pill(status) {
+  if (status === 'ACTIVE') return '<span class="pill active">ACTIVE</span>';
+  if (status === 'INSUFFICIENT_SAMPLE') return '<span class="pill insufficient">INSUFFICIENT SAMPLE</span>';
+  return status || '';
+}
+
+async function refreshStatus() {
+  const s = await j('/api/status');
+  const cb = s.compute_budget || {};
+  document.getElementById('header-stats').innerHTML = `
+    <span class="stat">mode <b>${s.mode}</b></span>
+    <span class="stat">real_orders <b>${s.real_orders}</b></span>
+    <span class="stat">uptime <b>${fmt(s.uptime_s/3600, 2)}h</b></span>
+    <span class="stat">universe <b>${s.universe_size}</b></span>
+    <span class="stat">tracked <b>${s.symbols_tracked}</b></span>
+    <span class="stat">market events <b>${s.market_events_total}</b></span>
+    <span class="stat">open trades <b>${s.open_trade_count}</b></span>
+    <span class="stat">dataset <b>${s.dataset_phase} / ${s.dataset_version}</b></span>
+    <span class="stat">cpu <b>${fmt(cb.cpu_percent, 1)}%</b></span>
+    <span class="stat">rss <b>${fmt(cb.rss_mb, 0)}MB</b></span>
+    <span class="stat">degraded <b>${cb.degraded_mode ? 'YES' : 'no'}</b></span>`;
+}
+
+async function refreshLiveMarket() {
+  const m = await j('/api/live_market');
+  const el = document.getElementById('live-market');
+  if (!m || !m.symbol) { el.innerHTML = '<span class="empty">no data yet</span>'; return; }
+  el.innerHTML = `
+    <span class="stat">symbol <b>${m.symbol}</b></span>
+    <span class="stat">exchange <b>${m.exchange}</b></span>
+    <span class="stat">direction <b class="${m.direction==='UP'?'pos':'neg'}">${m.direction}</b></span>
+    <span class="stat">velocity_10s <b class="${pnlClass(m.velocity_10s)}">${fmt(m.velocity_10s,3)}%</b></span>
+    <span class="stat">price <b>${fmt(m.price,6)}</b></span>
+    <span class="stat">regime <b>${m.regime_label || '-'}</b></span>`;
+}
+
+async function refreshStrategyTable() {
+  const d = await j('/api/strategy_kpis');
+  const t = document.getElementById('strategy-table');
+  t.querySelector('thead').innerHTML = `<tr><th>Strategy</th><th>Signals</th><th>Trades</th><th>Win Rate</th>
+    <th>Net PnL</th><th>Expectancy</th><th>Profit Factor</th><th>Avg Hold(s)</th><th>Avg MFE%</th><th>Avg MAE%</th><th>Status</th></tr>`;
+  const rows = d.strategies || [];
+  t.querySelector('tbody').innerHTML = rows.length ? rows.map(r => `<tr>
+    <td>${r.strategy}</td><td>${r.signals}</td><td>${r.trades}</td>
+    <td>${r.win_rate!=null?fmt(r.win_rate*100,1)+'%':'-'}</td>
+    <td class="${pnlClass(r.net_pnl)}">${fmt(r.net_pnl,2)}</td>
+    <td class="${pnlClass(r.expectancy)}">${fmt(r.expectancy,3)}</td>
+    <td>${fmt(r.profit_factor,2)}</td><td>${fmt(r.avg_hold_s,0)}</td>
+    <td>${fmt(r.avg_mfe_pct,3)}</td><td>${fmt(r.avg_mae_pct,3)}</td><td>${pill(r.status)}</td>
+  </tr>`).join('') : '<tr><td class="empty" colspan="11">no signals yet</td></tr>';
+}
+
+async function refreshAgreement() {
+  const d = await j('/api/agreement_cohorts');
+  const t = document.getElementById('agreement-table');
+  t.querySelector('thead').innerHTML = `<tr><th>Agreement Count</th><th>Trades</th><th>Win Rate</th><th>Expectancy</th><th>Status</th></tr>`;
+  const rows = d.cohorts || [];
+  t.querySelector('tbody').innerHTML = rows.length ? rows.map(r => `<tr>
+    <td>${r.agreement_count}</td><td>${r.trades}</td><td>${fmt((r.win_rate||0)*100,1)}%</td>
+    <td class="${pnlClass(r.expectancy)}">${fmt(r.expectancy,3)}</td><td>${pill(r.status)}</td>
+  </tr>`).join('') : '<tr><td class="empty" colspan="5">insufficient sample</td></tr>';
+}
+
+async function refreshConfirmationLab() {
+  const d = await j('/api/confirmation_window_lab');
+  const t = document.getElementById('confirmation-table');
+  t.querySelector('thead').innerHTML = `<tr><th>Strategy</th><th>Window(s)</th><th>N</th><th>Still Valid Rate</th><th>Avg Would-Be Net Edge%</th></tr>`;
+  const rows = d.windows || [];
+  t.querySelector('tbody').innerHTML = rows.length ? rows.map(r => `<tr>
+    <td>${r.strategy}</td><td>${r.window_s}</td><td>${r.n}</td>
+    <td>${fmt((r.still_valid_rate||0)*100,1)}%</td>
+    <td class="${pnlClass(r.avg_would_be_net_edge_pct)}">${fmt(r.avg_would_be_net_edge_pct,3)}</td>
+  </tr>`).join('') : '<tr><td class="empty" colspan="5">insufficient sample</td></tr>';
+}
+
+async function refreshExitPolicyLab() {
+  const d = await j('/api/exit_policy_lab');
+  const t = document.getElementById('exit-policy-table');
+  t.querySelector('thead').innerHTML = `<tr><th>Policy</th><th>N</th><th>Avg Net PnL%</th><th>Avg Hold(s)</th><th>Avg MFE%</th><th>Avg MAE%</th></tr>`;
+  const rows = d.policies || [];
+  t.querySelector('tbody').innerHTML = rows.length ? rows.map(r => `<tr>
+    <td>${r.policy}</td><td>${r.n}</td>
+    <td class="${pnlClass(r.avg_true_net_pnl_pct)}">${fmt(r.avg_true_net_pnl_pct,3)}</td>
+    <td>${fmt(r.avg_hold_s,0)}</td><td>${fmt(r.avg_mfe_pct,3)}</td><td>${fmt(r.avg_mae_pct,3)}</td>
+  </tr>`).join('') : '<tr><td class="empty" colspan="6">insufficient sample</td></tr>';
+}
+
+async function refreshTrades() {
+  const d = await j('/api/recent_trades?limit=30');
+  const t = document.getElementById('trades-table');
+  t.querySelector('thead').innerHTML = `<tr><th>Strategy</th><th>Symbol</th><th>Dir</th><th>Status</th>
+    <th>Entry</th><th>Exit</th><th>Net PnL%</th><th>Exit Policy</th><th>Hold(s)</th></tr>`;
+  const rows = d.trades || [];
+  t.querySelector('tbody').innerHTML = rows.length ? rows.map(r => `<tr>
+    <td>${r.strategy}</td><td>${r.symbol}</td><td class="${r.direction==='UP'?'pos':'neg'}">${r.direction}</td>
+    <td>${r.status}</td><td>${fmt(r.entry_price,6)}</td><td>${fmt(r.exit_price,6)}</td>
+    <td class="${pnlClass(r.true_net_pnl_pct)}">${fmt(r.true_net_pnl_pct,3)}</td>
+    <td>${r.exit_policy||'-'}</td><td>${fmt(r.hold_s,0)}</td>
+  </tr>`).join('') : '<tr><td class="empty" colspan="9">no trades yet</td></tr>';
+}
+
+async function refreshMissed() {
+  const d = await j('/api/missed_moves?limit=20');
+  const t = document.getElementById('missed-table');
+  t.querySelector('thead').innerHTML = `<tr><th>Symbol</th><th>Exchange</th><th>Dir</th><th>Move%</th><th>Reject Reason</th></tr>`;
+  const rows = d.missed_moves || [];
+  t.querySelector('tbody').innerHTML = rows.length ? rows.map(r => `<tr>
+    <td>${r.symbol}</td><td>${r.exchange}</td><td class="${r.direction==='UP'?'pos':'neg'}">${r.direction}</td>
+    <td>${fmt(r.move_pct,3)}</td><td>${r.reject_reason||'-'}</td>
+  </tr>`).join('') : '<tr><td class="empty" colspan="5">none logged yet</td></tr>';
+}
+
+async function refreshFalsePositives() {
+  const d = await j('/api/false_positives?limit=20');
+  const t = document.getElementById('fp-table');
+  t.querySelector('thead').innerHTML = `<tr><th>Strategy</th><th>Symbol</th><th>Classification</th></tr>`;
+  const rows = d.false_positives || [];
+  t.querySelector('tbody').innerHTML = rows.length ? rows.map(r => `<tr>
+    <td>${r.strategy}</td><td>${r.symbol}</td><td>${r.classification}</td>
+  </tr>`).join('') : '<tr><td class="empty" colspan="3">none logged yet</td></tr>';
+}
+
+async function refreshAll() {
+  await Promise.all([refreshStatus(), refreshLiveMarket(), refreshStrategyTable(), refreshAgreement(),
+    refreshConfirmationLab(), refreshExitPolicyLab(), refreshTrades(), refreshMissed(), refreshFalsePositives()]);
+}
+refreshAll();
+setInterval(refreshAll, 3000);
+</script>
+</body>
+</html>

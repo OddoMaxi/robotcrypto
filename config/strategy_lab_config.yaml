@@ -1,0 +1,111 @@
+# MOMENTUM STRATEGY LAB V2 - configuration. Fully separate from config/config.yaml
+# (the existing Momentum Bot's config, untouched by this file). SAFETY: same two
+# flags, same guarantee - nothing in strategy_lab/ can place a real order
+# regardless of these values (see strategy_lab/safety), this is the visible
+# switch, not the mechanism.
+mode:
+  shadow_mode: true
+  real_orders: 0
+
+exchanges:
+  - binance
+  - bybit
+  - okx
+
+universe:
+  quote_asset: USDT
+  min_quote_volume_24h: 2000000
+  refresh_interval_s: 300
+  ws_symbols_per_connection:
+    binance: 60
+    bybit: 40
+    okx: 40
+
+stage:
+  cycle_interval_s: 2
+  # NOTE: this is a raw |velocity_pct(now, 10s)| reading (see strategy_lab/app.py
+  # _fast_score), not the baseline bot's weighted/volume-amplified multi-horizon
+  # score - the two are on different scales and must not share a threshold value.
+  min_abs_fast_score: 0.03   # below this a symbol isn't worth a full strategy pass this cycle
+
+# 2-core VPS shared with the arbitrage bot AND the existing Momentum Bot - the
+# Lab must never be the reason either of those degrades. See section 18.
+compute_budget:
+  degrade_threshold_ratio: 0.8
+  degraded_promote_fraction: 0.5
+  max_symbols_full_pass: 60   # hard cap on symbols evaluated by the full strategy suite per cycle
+
+strategies:
+  baseline_momentum_starting:
+    min_score: 55        # unchanged formula (momentum/engines/starting.py), same threshold shape as baseline
+  persistent_micro_trend:
+    horizons_s: [1, 3, 5, 10, 15, 20, 30, 60]
+    min_score: 55
+  impulse_pullback_reacceleration:
+    impulse_min_velocity_pct_10s: 0.15
+    impulse_lookback_s: 90
+    pullback_min_ratio: 0.15    # a pullback smaller than this isn't "controlled", it's noise
+    pullback_max_ratio: 0.75    # deeper than this and the impulse thesis is probably broken
+    reaccel_min_score: 55
+  breakout_retest_continuation:
+    level_lookback_s: 90
+    retest_tolerance_pct: 0.25
+    min_breakout_magnitude_pct: 0.15
+    min_score: 55
+  cross_exchange_lead_lag:
+    onset_threshold_pct: 0.10
+    min_sample_size: 30         # below this, NET_EXPECTANCY_AFTER_COSTS is not shown/traded on - INSUFFICIENT SAMPLE
+
+exhaustion:
+  veto_threshold: 75            # exhaustion_risk >= this vetoes entry regardless of strategy score
+late_entry:
+  veto_threshold: 70            # mirrors momentum/entry/entry_engine.py's LATE_ENTRY_RISK_REJECT_THRESHOLD
+
+meta_engine:
+  actionable_score_threshold: 50   # a strategy "votes" for a direction once its score crosses this
+
+execution:
+  taker_fee_bps_by_exchange:
+    binance: 10
+    bybit: 10
+    okx: 8
+  simulated_latency_variants_ms: [50, 100, 250, 500, 1000]   # section 11: tested, not just one blessed number
+  primary_latency_ms: [50, 250]    # uniform range used for the one real shadow fill per trade
+  min_expected_net_edge_pct: 0.05  # 0 TRADE > BAD TRADE - reject if expected move can't clear costs by this margin
+  risk:
+    paper_account_equity: 10000.0
+    default_risk_pct: 0.005
+    reward_risk_target_multiple: 2.0
+
+exit_lab:
+  fixed_horizons_s: [5, 10, 15, 20, 30, 45, 60]
+  trailing_activation_r: 1.0
+  breakeven_trigger_r: 0.5
+  partial_tp_r: 1.5
+  momentum_decay_fraction: 0.4     # velocity must hold at least this fraction of its entry-time value
+  orderflow_reversal_threshold: 0.5
+  exhaustion_exit_threshold: 75
+  max_tracking_s: 300              # give up tracking counterfactual exits after this long
+  production_exit_policy: THESIS_INVALIDATION_EXIT   # which policy closes the one REAL ledger trade
+
+fast_entry_lab:
+  confirmation_windows_s: [1, 2, 3, 5, 8, 10, 15, 20, 30, 45, 60]
+  primary_confirmation_s: 5        # the window actually used for the one real shadow entry
+
+# section 16: chronological RESEARCH -> VALIDATION -> OUT_OF_SAMPLE split. `phase`
+# is a deliberate, manual, versioned human decision (never auto-promoted) made only
+# after enough RESEARCH sample exists - flipping it is the only way any parameter
+# tuned during RESEARCH gets evaluated on data it wasn't tuned against. Every change
+# to `version` is logged permanently (see strategy_lab/walk_forward.py); every
+# signal/trade is tagged with the phase+version active at the moment it was created,
+# and that tag is never rewritten retroactively.
+walk_forward:
+  version: "v1"
+  phase: RESEARCH   # RESEARCH | VALIDATION | OUT_OF_SAMPLE
+
+dashboard:
+  host: "0.0.0.0"
+  port: 8802
+
+logging:
+  level: INFO

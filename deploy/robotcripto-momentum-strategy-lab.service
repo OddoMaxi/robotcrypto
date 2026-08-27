@@ -1,0 +1,26 @@
+[Unit]
+Description=Momentum Strategy Lab V2 (Shadow-only) - separate multi-strategy research engine, parallel to the baseline Momentum Bot and the arbitrage bot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=robotcripto-momentum-lab
+Group=robotcripto-momentum-lab
+WorkingDirectory=/opt/robotcripto-momentum
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/opt/robotcripto-momentum/.venv/bin/python -m strategy_lab.app
+Restart=always
+RestartSec=5
+
+# isolation from the rest of the system, the arbitrage bot, and the baseline
+# Momentum Bot's own service+user - a dedicated system user, own DB file
+# (db/strategy_lab.db), own port (8802), never touches momentum.db or 8801.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+ReadWritePaths=/opt/robotcripto-momentum/db
+
+[Install]
+WantedBy=multi-user.target
